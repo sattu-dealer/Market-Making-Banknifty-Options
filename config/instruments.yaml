@@ -1,0 +1,39 @@
+# BANKNIFTY instrument scope and resolution rules.
+#
+# Nothing here is hardcoded in Python. NSE has repeatedly changed BANKNIFTY
+# expiry day, weekly availability, lot size and tick size, so every one of
+# those is resolved from the exchange instrument master at runtime and only
+# *constrained* here.
+
+underlying: BANKNIFTY
+exchange: NSE
+segment: D                      # D = derivatives (NSE_FNO)
+
+instrument_master:
+  # Public, no-auth CSV published by Dhan. Refreshed daily by scripts/refresh_master.py.
+  url: https://images.dhan.co/api-data/api-scrip-master-detailed.csv
+  local_path: data/reference/api-scrip-master-detailed.csv
+  max_age_hours: 24
+
+futures:
+  # Which futures contract to treat as "front". Resolved by expiry order, not by
+  # month name, so the roll is automatic.
+  contract: front               # front | next
+  # Roll to the next contract this many trading days before expiry. The front
+  # contract's liquidity collapses into the roll window, which would otherwise
+  # contaminate the microstructure statistics.
+  roll_days_before_expiry: 3
+
+options:
+  expiry: nearest_monthly       # BANKNIFTY has no weeklies (see DECISIONS.md #5)
+  strike_band: 3                # ATM +/- N strikes
+  option_types: [CE, PE]
+  # Require at least this many calendar days to expiry. The final sessions of a
+  # cycle are a pin-risk regime, not representative of normal quoting. Set to 3
+  # to match `futures.roll_days_before_expiry`, so the futures and options legs
+  # never disagree about which cycle is live.
+  min_days_to_expiry: 3
+
+# Tick sizes in the master CSV are quoted in PAISE. Confirmed by cross-checking
+# index options at 5.0 against the published NSE value of Rs 0.05.
+tick_size_units: paise

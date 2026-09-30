@@ -1,0 +1,72 @@
+# NSE session windows and the trading-day calendar, for `main.py`.
+#
+# THE 2026 NSE TRADING HOLIDAY LIST
+#   Supplied by the operator on 2026-08-24 from the exchange's published
+#   Trading Holidays table (16 entries, all of which fall on weekdays). Verified
+#   on entry: every date below is Mon-Fri, so none is redundant with the weekend
+#   rule, and the count matches the source exactly.
+#
+#   WHAT BELONGS HERE: full trading closures that fall on a weekday. Clearing and
+#   settlement holidays do NOT belong -- the market trades on those days, only
+#   settlement is deferred, and listing one would skip a real session. Wed
+#   2026-08-26 (Id-E-Milad) is exactly that case and is deliberately absent.
+#   Closures that land on a weekend are also omitted as redundant: the exchange
+#   lists four (2026-02-15 Mahashivratri, 2026-03-21 Id-Ul-Fitr, 2026-08-15
+#   Independence Day, 2026-11-08 Diwali Laxmi Pujan) and the weekday rule already
+#   excludes every one. That keeps a property worth having: *every* date below is
+#   a Mon-Fri closure, so the list is exactly the information the weekend rule
+#   cannot supply. 2026-11-08 also carries a Muhurat session; if that is ever
+#   worth capturing it needs its own window, not an entry here.
+#
+#   THE ASYMMETRY THAT DECIDES WHAT GOES IN
+#   A wrongly-listed holiday makes `main.py` skip a real session and that data is
+#   gone for good. A wrongly-omitted one costs a wasted morning that the manifest
+#   reports as zero rows -- unambiguous and free. So the bar for adding a date is
+#   higher than the bar for leaving one out, which is why only the exchange's own
+#   Trading Holidays table is used and clearing holidays are excluded.
+#
+#   TWO EXPIRY COLLISIONS, NOTED BECAUSE BANKNIFTY EXPIRES ON A TUESDAY
+#   2026-03-31 and 2026-11-24 are both the last Tuesday of their month and both
+#   are closures, so those two monthly expiries settle earlier than the naive
+#   "last Tuesday" rule predicts. Neither falls in the capture window, and more
+#   importantly neither needs handling: `universe.py` resolves `front`/`next` by
+#   index into the *vendor's live expiry list* rather than computing a Tuesday,
+#   so a shifted expiry is already correct. This note exists so nobody later
+#   "fixes" that by adding a date rule.
+holidays:
+  - '2026-01-15'   # Thu  Municipal Corporation Election - Maharashtra
+  - '2026-01-26'   # Mon  Republic Day
+  - '2026-03-03'   # Tue  Holi
+  - '2026-03-26'   # Thu  Shri Ram Navami
+  - '2026-03-31'   # Tue  Shri Mahavir Jayanti      <- last Tuesday of March
+  - '2026-04-03'   # Fri  Good Friday
+  - '2026-04-14'   # Tue  Dr. Baba Saheb Ambedkar Jayanti
+  - '2026-05-01'   # Fri  Maharashtra Day
+  - '2026-05-28'   # Thu  Bakri Id
+  - '2026-06-26'   # Fri  Muharram
+  - '2026-09-14'   # Mon  Ganesh Chaturthi          <- the only one in the capture window
+  - '2026-10-02'   # Fri  Mahatma Gandhi Jayanti
+  - '2026-10-20'   # Tue  Dussehra
+  - '2026-11-10'   # Tue  Diwali-Balipratipada
+  - '2026-11-24'   # Tue  Prakash Gurpurb Sri Guru Nanak Dev  <- last Tuesday of November
+  - '2026-12-25'   # Fri  Christmas
+
+# Session windows, IST. Capture deliberately starts at the pre-open call rather
+# than at 09:15: order entry from 09:00 and the 09:08-09:12 randomised match
+# produce the opening print, and the equilibrium-price discovery in that window is
+# a distinct microstructure regime that cannot be recovered afterwards.
+sessions:
+  preopen_start: "09:00"     # pre-open order entry begins
+  continuous_start: "09:15"  # continuous trading begins
+  continuous_end: "15:30"    # continuous trading ends
+  # Capture runs a little wider than the market on both ends. Early, so a slow
+  # resolve or a reconnect does not eat the open; late, so the closing print and
+  # any post-close settlement traffic land inside the recording rather than
+  # outside it.
+  capture_start: "08:58"
+  capture_stop: "15:35"
+
+# How long before the capture start to run preflight (master refresh, universe
+# dry-run). Ten minutes is enough for a 36 MB download on a slow line and still
+# leaves the resolved universe visible on screen before anything connects.
+preflight_lead_s: 600

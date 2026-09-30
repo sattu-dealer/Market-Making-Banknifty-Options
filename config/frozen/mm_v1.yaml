@@ -1,0 +1,57 @@
+# FROZEN STRATEGY CONFIGURATION mm_v1 -- written 2026-09-30, BEFORE any holdout run.
+#
+# This is the exact configuration that will be run, once, on the holdout days in
+# config/frozen/protocol.yaml. It is the argument set of scripts/mm.py; the
+# holdout run passes these values and nothing else. Do not edit after the holdout
+# unlock -- a changed strategy is mm_v2, with its own entry in DECISIONS.md.
+#
+# Provenance of every non-default value (all chosen on develop days only):
+#   cost_split symmetric   structural: per-side gating drifted the book long options
+#                          (sell-side STT ~4x buy side). Same round-trip edge, balanced fills.
+#   vega_limit 3           risk limit: an uncapped book reached 150 ATM-lots long vega,
+#                          which appeared as beta -4.3 lots / R^2 0.28 on the forward.
+#   min_spread_bp 37.8     DERIVED, not swept: round-trip statutory cost 23.71 bp +
+#                          2 x measured 300 s adverse selection 7.05 bp (Aug 27+28 fills).
+#                          Neighbours 30 and 45 bp were run afterwards as a robustness
+#                          check; all six (threshold x queue convention) cells positive.
+#   buffer 3 ticks         from the early placement grid (Aug 28, band 3).
+#   min_dte 3              pre-registered 2026-08-23 in config/instruments.yaml, before
+#                          any data existed; excludes the Aug 24/25 near-expiry sessions.
+# Everything else is a module default.
+#
+# Tried before freezing: 26 distinct configurations (reports/config_log.jsonl), all on
+# develop days. Develop result for this configuration (Aug 27 + Aug 28, member profile):
+#   net +127,594 | liquidated at close +105,441 | Dhan -62,504 | R^2 0.017 / 0.000
+#
+# Levers tried and rejected on develop data, recorded so they are not re-tried as if new:
+#   fresher merged book (book/merge.py): no change in realised spread
+#   5-level imbalance pull at 0.4: failed the realised-vs-effective falsification test
+#   vega skew (0.5, 2.0): increased trading into adverse fills
+#   join-only (never improve the touch): lower realised spread per unit
+
+name: mm_v1
+frozen_at: 2026-09-30
+script: scripts/mm.py
+args:
+  band: 11
+  book: depth
+  buffer: 3.0
+  close_only: 0.0
+  cost_split: symmetric
+  delta_limit: 5.0
+  delta_skew: 0.5
+  fv: blend
+  imbalance: 1.0
+  join_only: false
+  leg: both
+  leg_cap: 5
+  leg_skew: 0.5
+  levels: 10
+  lots: 1
+  max_behind: 0.0
+  min_dte: 3
+  min_premium: 5.0
+  min_spread_bp: 37.8
+  optimistic_queue: false
+  vega_limit: 3.0
+  vega_skew: 0.0

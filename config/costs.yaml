@@ -1,0 +1,133 @@
+# Indian F&O statutory cost stack.
+#
+# WHY THIS FILE IS LOAD-BEARING: a market maker's gross edge is a few ticks per
+# round trip. On BANKNIFTY futures one tick is Rs 6.00 per lot, while STT alone
+# is ~Rs 867 per round-trip lot. Costs do not trim the PnL here, they dominate
+# it by two orders of magnitude. Any market-making result that omits this stack
+# is not wrong at the margin -- it is wrong about the sign.
+#
+# SOURCE: https://zerodha.com/charges/ (retrieved 2026-08-23). Statutory rates
+# are identical across brokers; only `brokerage` is broker-specific.
+#
+# VERIFY BEFORE PUBLISHING ANY RESULT. These rates change by government budget
+# and SEBI circular, and the futures STT rate in particular has been revised
+# repeatedly (0.01% -> 0.0125% -> 0.02% -> the 0.05% below). Re-check against
+# the current NSE/SEBI circular and update `retrieved` when you do.
+#
+# STT VERIFIED 2026-09-30 (BRIEFING §13.10): Union Budget 2026 raised options STT
+# on sale premium 0.10% -> 0.15% and futures STT 0.02% -> 0.05%, both effective
+# 2026-04-01, so both rates below apply to every captured session. Sources:
+# ICICI Direct, "STT Changes in Budget 2026: What F&O Traders Need to Know";
+# HDFC Securities note of 2026-02-07; Zerodha support STT article.
+# The exchange_txn, sebi_fee and stamp_duty rates were NOT re-verified.
+retrieved: 2026-08-23
+stt_verified: 2026-09-30
+source: https://zerodha.com/charges/
+
+futures:
+  # Securities Transaction Tax: sell side only, on contract turnover.
+  stt:
+    rate: 0.0005                # 0.05%
+    side: sell
+    base: turnover
+  # NSE exchange transaction charge, both sides, on turnover.
+  exchange_txn:
+    rate: 0.0000183             # 0.00183%
+    side: both
+    base: turnover
+  # SEBI turnover fee: Rs 10 per crore = 0.0001% of turnover.
+  sebi_fee:
+    rate: 0.000001
+    side: both
+    base: turnover
+  stamp_duty:
+    rate: 0.00002               # 0.002%, buy side only
+    side: buy
+    base: turnover
+  # NSE Investor Protection Fund Trust: Rs 0.01 per crore.
+  ipft:
+    rate: 0.000000001
+    side: both
+    base: turnover
+
+options:
+  # Options STT is on PREMIUM, not notional. This is the single biggest reason
+  # options are a more plausible market-making venue than futures at retail
+  # rates -- see reports/phase0_instrument_selection.md.
+  stt:
+    rate: 0.0015                # 0.15% on premium
+    side: sell
+    base: premium
+  exchange_txn:
+    rate: 0.0003553             # 0.03553% on premium
+    side: both
+    base: premium
+  sebi_fee:
+    rate: 0.000001
+    side: both
+    base: premium
+  stamp_duty:
+    rate: 0.00003               # 0.003%, buy side only
+    side: buy
+    base: premium
+  ipft:
+    rate: 0.000000001
+    side: both
+    base: premium
+
+# GST applies to (brokerage + exchange_txn + sebi_fee + ipft). NOT to STT or
+# stamp duty -- a tax on a tax is not levied.
+gst:
+  rate: 0.18
+  applies_to: [brokerage, exchange_txn, sebi_fee, ipft]
+
+# Brokerage, by broker profile. The statutory rates above are identical across
+# brokers; this is the only broker-specific section in the file.
+#
+# CHARGED PER EXECUTED ORDER, NOT PER FILL. A resting quote that fills in five
+# partials pays brokerage once. `OrderCost` in src/bnfmm/sim/costs.py is the
+# only thing that models this correctly; `CostModel.fill_cost` charges per call
+# and exists for standalone arithmetic (breakeven tables) where one fill is one
+# order by construction.
+#
+# `flat` is the per-order fee. `pct`, when present, caps it: the charge becomes
+# min(flat, pct * executed_value). Omit `pct` for a genuinely flat schedule --
+# encoding a cap that the broker does not apply understates cost.
+brokerage:
+  # Every result in this project is reported under both `member` and `dhan`.
+  # See DECISIONS.md #13: there is no single headline cost figure.
+  reported_profiles: [member, dhan]
+  default_profile: member
+
+  profiles:
+    member:
+      # Exchange member trading own account. Membership and terminal fees are
+      # fixed monthly costs, not per-order, so they are deliberately absent
+      # from a per-trade model -- this is the most favourable regime that could
+      # plausibly be modelled, not a realistic retail one.
+      label: member (Rs 0/order)
+      futures: {flat: 0.0}
+      options: {flat: 0.0}
+
+    dhan:
+      # https://dhan.co/pricing/ (retrieved 2026-08-23): "Rs 20 per executed
+      # order for equity & commodity F&O". FLAT for BOTH products.
+      #
+      # The earlier version of this file applied min(Rs 20, 0.03%) to both,
+      # which is wrong: Dhan's "whichever is lower" rule covers equity/ETF
+      # intraday and MTF, not F&O. It understated 1-lot options brokerage by
+      # Rs 11 per order. See DECISIONS.md #12.
+      label: retail (Dhan Rs 20/order)
+      futures: {flat: 20.0}
+      options: {flat: 20.0}
+
+    zerodha:
+      # https://zerodha.com/charges/ (retrieved 2026-08-23). Comparison profile
+      # only -- not used in any reported result. Kept because it is where the
+      # `pct` cap is a real rule: Zerodha futures brokerage is "0.03% or Rs 20
+      # per executed order, whichever is lower", while its options brokerage is
+      # "Flat Rs 20 per executed order". Retaining it keeps the cap branch
+      # exercised against a broker that actually charges it.
+      label: retail (Zerodha, comparison)
+      futures: {flat: 20.0, pct: 0.0003}
+      options: {flat: 20.0}

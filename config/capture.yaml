@@ -1,0 +1,208 @@
+# Capture universe for systematic BANKNIFTY harvesting.
+#
+# This file is the answer to one question: given 5 WebSocket connections, 50
+# instruments per 20-level depth connection, and one option-chain request per
+# 3 seconds, what is worth recording? Every number below is checked against
+# those documented limits by `src/bnfmm/data/universe.py` at resolve time, so a
+# band that does not fit fails at 08:50 instead of silently truncating at 09:15.
+#
+# WHY THIS FILE EXISTS SEPARATELY FROM config/instruments.yaml
+#   That file configures the *quoting study* and deliberately excludes the
+#   near-expiry regime (`min_days_to_expiry: 3`, `roll_days_before_expiry: 3`),
+#   which is correct for a study of normal quoting and exactly wrong for
+#   harvesting: on 2026-08-24 the August contract is 1 DTE and is the thing
+#   being recorded. Capture resolves by index into the live expiry list with no
+#   roll filter, so `front` follows the calendar and rolls by itself the morning
+#   after an expiry.
+#
+# THE BINDING CONSTRAINT, WITH THE ARITHMETIC WRITTEN OUT
+#   Strike spacing near the money is 100 points (verified against the
+#   2026-08-23 master), so ATM +/-11 is 23 strikes = 46 CE+PE legs. Plus the
+#   front and next futures that is 48 of the 50 depth slots, leaving 2 spare.
+#   +/-12 would be 25 strikes = 50 legs, which with 2 futures is 52 and over
+#   the cap -- the exact slip this config's enforcement is designed to catch.
+#   At spot ~57,800, +/-11 strikes is +/-1,100 points, i.e. +/-1.9%.
+
+underlying: BANKNIFTY
+exchange: NSE
+segment: D
+instrument_master_path: data/reference/api-scrip-master-detailed.csv
+
+# Sockets deliberately left unused. A sixth connection does not get refused --
+# it disconnects the *first*, i.e. the one that is working. A suspended laptop
+# can leave half-open sockets the server still counts, so reconnect-after-resume
+# needs headroom that does not have to be reclaimed by waiting.
+reserve_connections: 2
+
+session:
+  raw_root: data/tier_a/raw
+  parquet_root: data/tier_a/parquet
+  # The raw byte log is the primary output and Parquet is secondary: a decoder
+  # bug on a day that cannot be re-run must cost an offline re-run, not the day.
+  write_parquet: true
+  # Rotate raw parts at 256 MiB so one corrupt file is a bounded loss.
+  rotate_mib: 256
+  # fsync stays off: the threat model is suspend and SIGKILL, both of which a
+  # plain flush survives, not power loss. Flushing to the OS every 64 records
+  # or 1 MiB costs nothing and closes that window.
+  flush_records: 64
+  flush_mib: 1
+  fsync: false
+
+keepalive:
+  # The server closes a socket after 40 s of client silence. The websockets
+  # library's own protocol-level ping is used rather than a hand-rolled task
+  # (the vendor SDK keeps alive the same way), and 15 s is asserted against the
+  # 40 s limit in channels.py rather than assumed to be under it.
+  ping_interval_s: 15.0
+  ping_timeout_s: 20.0
+  # A library ping can keep answering across a laptop suspend while no market
+  # data flows at all, which is indistinguishable from a dead feed in the data.
+  # So staleness is measured on *bytes received*, not on pong replies.
+  stale_after_s: 45.0
+
+reconnect:
+  base_delay_s: 1.0
+  max_delay_s: 60.0
+  multiplier: 2.0
+  jitter: 0.25
+  # Bounded because a channel retrying forever with no data looks identical to a
+  # working one in a log tail, which is how a dead session goes unnoticed.
+  #
+  # WHY 40 AND NOT 20, WHICH IS WHERE THIS STARTED
+  #   The counter resets on *data*, not on connect, so it only accumulates while a
+  #   channel is receiving nothing -- and the 20-level depth feed is a pure delta
+  #   feed with no snapshot on subscribe, so it legitimately receives nothing from
+  #   the 08:58 capture start until the book starts moving. Each cold cycle costs
+  #   `stale_after_s` + backoff, i.e. 105 s once the delay saturates, so 20
+  #   attempts expire at 09:28 -- only twelve minutes after continuous trading
+  #   begins. A late open, or a depth feed quiet through the pre-open, would kill
+  #   the depth channel for the entire session while the feed and chain channels
+  #   kept running to 15:35, and the loss would surface only in the closing
+  #   summary. 40 attempts pushes the give-up to 10:03: about an hour of
+  #   continuous silence tolerated.
+  #   This only relaxes the silent-socket backstop. Documented disconnect reasons
+  #   (805-809) are fatal immediately and are not governed by this count, and the
+  #   session is bounded by --duration regardless, so a larger budget cannot turn
+  #   into an unbounded retry loop.
+  #   The better fix -- not counting cold-start staleness against the budget at
+  #   all -- is deliberately deferred to Phase 1c, where tests/test_channels.py
+  #   can cover it. It is not worth a behaviour change to the reconnect path on
+  #   the morning of the first capture.
+  max_attempts: 40
+
+option_chain:
+  # BANKNIFTY spot index, read from segment I of the master, not hardcoded from
+  # documentation. The REST option-chain endpoint wants the *index* security id
+  # with UnderlyingSeg IDX_I -- passing the futures id here returns nothing
+  # useful, which is a mistake worth naming because it is invisible in the reply.
+  underlying_scrip: 25
+  underlying_segment: IDX_I
+  # Alternate front/next so each unique request is well clear of the 3 s floor.
+  expiries: [front, next]
+  # 3.0 is the documented limit; 3.5 leaves margin for clock jitter, and at
+  # ~7,100 requests over a 6.25 h session it uses 7% of the 100,000/day quota.
+  min_interval_s: 3.5
+
+channels:
+  # -------------------------------------------------------------------------
+  # 20-level depth: the only source of queue-position evidence, and the reason
+  # this project exists. 48 of 50 slots.
+  # -------------------------------------------------------------------------
+  - name: depth
+    protocol: depth_20
+    groups:
+      # Futures first, so a cap can never evict them. `required` makes that a
+      # hard failure rather than a silent drop.
+      - name: front_future
+        kind: future
+        expiry: front
+        required: true
+      - name: next_future
+        kind: future
+        expiry: next
+        required: true
+      # The at-the-money core, claimed before the wider band for the same
+      # reason. 9 strikes x 2 = 18.
+      - name: front_atm_core
+        kind: options
+        expiry: front
+        strike_band: 4
+        option_types: [CE, PE]
+        required: true
+      # The rest of the band. Overlapping strikes are deduplicated, so this
+      # contributes 23 - 9 = 14 strikes x 2 = 28, for 46 option legs in total.
+      # Not `required`: this is the group the drop order is designed to eat,
+      # furthest strike first.
+      - name: front_band
+        kind: options
+        expiry: front
+        strike_band: 11
+        option_types: [CE, PE]
+
+  # -------------------------------------------------------------------------
+  # General feed (REQUEST_FULL): 5-level book, cumulative volume and OI. The
+  # volume tape is what bounds fills in the simulator, and this is the only
+  # channel that can carry the indices. 5000 per connection, so breadth here
+  # is free -- there is no reason to be stingy.
+  # -------------------------------------------------------------------------
+  - name: feed
+    protocol: market_feed
+    groups:
+      # The BANKNIFTY spot index is the anchor of the fair-value estimator: it
+      # has no bid-ask, therefore no bid-ask bounce, and it is the only
+      # high-frequency reference not contaminated by the wide futures spread.
+      # It costs one slot out of 5000 and is unrecoverable if missed.
+      - name: indices
+        kind: index
+        security_ids: [25, 13]   # Nifty Bank, Nifty 50
+        required: true
+      - name: front_future
+        kind: future
+        expiry: front
+        required: true
+      - name: next_future
+        kind: future
+        expiry: next
+        required: true
+      - name: front_band
+        kind: options
+        expiry: front
+        strike_band: 50          # 101 strikes x 2 = 202 legs
+        option_types: [CE, PE]
+      - name: next_band
+        kind: options
+        expiry: next
+        strike_band: 30          # 61 strikes x 2 = 122 legs
+        option_types: [CE, PE]
+
+  # -------------------------------------------------------------------------
+  # Option chain over REST: every strike of both expiries, top-of-book plus IV,
+  # greeks and OI, at 0.33 Hz. Two jobs. First, coverage the 50-slot depth
+  # budget can never reach. Second, it is plain JSON, so it cannot fail for any
+  # reason the binary decoders can -- a total WebSocket failure still leaves
+  # whole-chain top-of-book at 3-second resolution. Its parameters live in the
+  # `option_chain` block above; it subscribes to no instrument list.
+  # -------------------------------------------------------------------------
+  - name: chain
+    protocol: option_chain
+    groups: []
+
+# ---------------------------------------------------------------------------
+# PER-DAY EDITS, WRITTEN DOWN BEFORE THEY ARE NEEDED
+#
+# Tue 2026-08-25 (expiry day, 0 DTE). Split the depth budget across the roll
+# instead of spending it all on the expiring contract: September becomes front
+# month at the close, and how liquidity migrates across that boundary is only
+# observable with depth on both sides of it. Set `front_band.strike_band: 7`
+# (15 strikes x 2 = 30) and add a `next_band` group with `strike_band: 4`
+# (9 x 2 = 18) -- 48 legs plus 2 futures is exactly 50. `required` on the two
+# futures and the ATM core means a miscount raises rather than truncates.
+#
+# Wed 2026-08-26 onward. No edit needed: the August rows drop out of the live
+# expiry list on their own, `front` becomes September and `next` becomes
+# October. Optionally scale depth to two connections (100 instruments,
+# +/-23 strikes = 47 strikes x 2 = 94 legs plus 2 futures = 96) once day one has
+# proved the pipeline; that requires a second `depth_20` channel entry and
+# dropping `reserve_connections` to 1, which the resolver will check.
+# ---------------------------------------------------------------------------
