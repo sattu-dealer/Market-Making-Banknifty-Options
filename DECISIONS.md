@@ -823,3 +823,27 @@ the structural changes of #21 make the quoter capture spread and stay market-neu
 data the edge is smaller than the cost of not being fast — a co-location bet, not a strategy a
 retail-latency participant could run. The zero-latency figures measure what the quoting logic
 captures; they are not what a real participant would have made.
+
+## 24. The rv-market-maker fork: both latency-tolerant strategies fail their pre-registered bars
+
+*2026-10-02, branch `rv-market-maker`.* After #23 showed the classic edge is latency-bound, `main`
+was tagged `classic-mm-v1` and this branch was forked to look for an edge that is not speed.
+Each candidate got a go/no-go committed and pushed *before* its statistic was computed
+(`config/frozen/protocol_rv.yaml`, `protocol_rv_patient.yaml`), measured on Aug 27/28 only:
+
+1. **Smile relative value** — leave-one-out smile residuals persist (autocorrelation 0.587 at
+   5 s, 0.30 at 5 min) and survive a 1 s entry delay almost intact, but the correction toward the
+   smile is at best +4.46 bp against 11.85 bp per side. **NO-GO.**
+   `reports/rv_strategy1_smile_go_no_go.md`
+2. **Patient liquidity provision** — orders δ bp from a 1 s-old fair value. Close in (50 bp) they
+   are picked off (−3.75 bp at 30 s); further out, dislocations revert +17–22 bp over 5 minutes,
+   below the 23.71 bp round trip and within noise. **NO-GO.**
+   `reports/rv_strategy2_patient_go_no_go.md`
+
+Neither was built, so the validation days (Aug 31 – Sep 4) remain untouched by this family.
+
+**The combined conclusion, which is the branch's result:** on this market the two constraints
+bind from opposite sides. Edges large enough to pay Indian statutory costs on option premium
+(~24 bp round trip) decay faster than ~0.5 s; edges that survive the latency are smaller than
+the cost. Market making BANKNIFTY options passively from a non-co-located seat is squeezed out
+by speed on one side and STT on the other.
