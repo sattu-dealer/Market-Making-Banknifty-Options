@@ -1,0 +1,36 @@
+# PRE-REGISTERED GO / NO-GO -- rv-market-maker branch, strategy family #2:
+# patient liquidity provision (resting orders far from fair value, filled only by
+# dislocating trades). Written 2026-10-02, after strategy #1's NO-GO and BEFORE any
+# statistic for #2 was computed. Days and their caveats are those of
+# config/frozen/protocol_rv.yaml (develop Aug 27/28; validation Aug 31 - Sep 4).
+#
+# WHY THIS IS LATENCY-HONEST. A resting order's price is set from a fair value that
+# is entry_delay_s old (it was placed then), and it fills only when a later print
+# trades through that price. Nothing races: the order was already there.
+#
+# THE MEASUREMENT (develop days only, front month, 23-strike depth band, both legs):
+#   fair value     = book mid, observed entry_delay_s before the print
+#   resting bid    = fair * (1 - delta), resting ask = fair * (1 + delta)
+#   a SELL-classified print at price p <= resting bid fills the bid at the bid
+#   (never better); symmetrically for asks.
+#   markout(tau)   = side * (mid(t + tau) - fill_price) / fill_price, in bp,
+#                    side = +1 for a filled bid, -1 for a filled ask.
+#
+# GO requires, for at least one (delta, tau):
+#   1. mean markout(tau) > round-trip member cost (23.71 bp) -- the position must
+#      be exited, so it pays both sides;
+#   2. t-statistic of (markout - 23.71) >= 3.0, with standard errors clustered by
+#      minute (prints within a minute are not independent; 3.0 rather than 2.0
+#      because 3 x 2 = 6 cells are tested);
+#   3. at least 50 fills per day on average -- otherwise there is no strategy.
+# Otherwise NO-GO.
+
+frozen_at: 2026-10-02
+days_from: config/frozen/protocol_rv.yaml
+entry_delay_s: 1.0
+delta_bp: [50, 100, 200]
+horizons_s: [30, 300]
+round_trip_cost_bp: 23.71
+min_t_stat: 3.0
+cluster: minute
+min_fills_per_day: 50
