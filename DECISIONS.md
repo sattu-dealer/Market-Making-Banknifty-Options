@@ -847,3 +847,32 @@ bind from opposite sides. Edges large enough to pay Indian statutory costs on op
 (~24 bp round trip) decay faster than ~0.5 s; edges that survive the latency are smaller than
 the cost. Market making BANKNIFTY options passively from a non-co-located seat is squeezed out
 by speed on one side and STT on the other.
+
+## 25. Three more bugs found while building and stress-testing Phase 2
+
+*2026-09-30.* Recorded alongside #17 and #19 because each would have produced a wrong number.
+
+1. **Order ids from Python `id()`.** The first portfolio runs grouped fills into orders by
+   `id(order)`. Python reuses ids after an object is garbage-collected, so later orders shared ids
+   with dead ones: sell fills were merged into "buy" orders and their STT was dropped. Member cost
+   was understated by ~16% (₹277,018 vs ₹329,055 on the first band-3 run) and Dhan brokerage was
+   charged on 32 "orders" instead of 13,007. Found because "32 orders for 13,007 fills" was
+   impossible. Fixed before any reported number: the fill model now assigns order ids and every
+   fill carries its own.
+2. **Event-driven books evaluated per packet.** On the quote feed a quiet option sends nothing
+   for seconds. Re-quoting a leg only when its own packet arrived left its quotes on a stale fair
+   value while the forward moved (Aug 27: −₹59,172 vs +₹80,643 on depth). Fixed by resampling onto
+   a 200 ms decision clock; the adapter still failed validation (§22.3 of BRIEFING) and was not
+   used for any reported result.
+3. **One-sided latency.** The first latency model delayed new orders but cancelled old ones
+   instantly, leaving a repricing quoter with no order in every gap. Replaced by symmetric latency
+   (`DepletionSimulator.cancel_at`) before the reported latency results.
+
+## 26. Branch policy: the classic study stays on `main`, new strategy families fork
+
+*2026-10-02.* At the user's request ("this must be a fork so that the classic market maker has its
+own place and importance in quant interviews"): `main` holds the complete classic study, pinned by
+tag `classic-mm-v1`; `rv-market-maker` holds the latency-tolerant strategy work and never merges
+back. `BRIEFING.md` and `DECISIONS.md` are kept identical on both branches so either is a complete
+handover; each branch has its own `README.md`. Every new strategy family gets its own frozen
+protocol file, committed and pushed before its first statistic.

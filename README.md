@@ -1,3 +1,33 @@
+# Branch `rv-market-maker` — looking for an options market-making edge that is not speed
+
+> **You are on the fork.** The complete classic study is on `main` (tag `classic-mm-v1`); its
+> README is reproduced below this section, unchanged. This branch never merges back.
+
+**Why it exists.** The classic market maker on `main` captures spread and is market-neutral, but
+its edge decays inside the ~0.5 s it takes a non-co-located participant to act: profitable at
+zero latency, loss-making at 500 ms out of sample. This branch asked whether a *different* kind of
+edge — one that does not depend on speed — could carry a market maker on the same data.
+
+**How.** Each candidate got a go/no-go committed and pushed **before** any statistic was computed
+(`config/frozen/protocol_rv.yaml`, `config/frozen/protocol_rv_patient.yaml`), measured on two
+development days only, so the five validation days stay untouched by this strategy family.
+
+| Candidate | What was measured | Result |
+|---|---|---|
+| **#1 Smile relative value** — quote options rich/cheap vs a leave-one-out IV smile | Mispricings persist (autocorrelation 0.59 at 5 s, 0.30 at 5 min) and survive a 1 s delay almost intact — but the correction toward the smile is +4.46 bp against 11.85 bp of cost per fill | **NO-GO** — beats latency, loses to cost. [report](reports/rv_strategy1_smile_go_no_go.md) |
+| **#2 Patient liquidity** — resting orders far from a 1 s-old fair value | 50 bp away: picked off (−3.75 bp at 30 s). 100 bp away: +21.6 bp reversion over 5 min vs a 23.71 bp round trip, within noise | **NO-GO**. [report](reports/rv_strategy2_patient_go_no_go.md) |
+
+**The conclusion of the fork:** in BANKNIFTY options, edges large enough to pay the ~24 bp
+round-trip statutory cost decay in under ~0.5 s, and edges slow enough to survive that latency are
+smaller than the cost. Passive market making from a non-co-located seat is squeezed by speed on
+one side and STT on the other. Neither candidate was built.
+
+New on this branch: `src/bnfmm/fairvalue/smile.py` (leave-one-out smile fit, tested),
+`scripts/rv_persistence.py`, `scripts/rv_patient.py`, the two protocols and two reports.
+Full handover: [`BRIEFING.md`](BRIEFING.md) §0 and §23; decisions [`DECISIONS.md`](DECISIONS.md) #24–#26.
+
+---
+
 # Market making BANKNIFTY options — a measured, honest negative result
 
 A research and simulation study of passive market making in NSE BANKNIFTY monthly options,
@@ -18,8 +48,8 @@ receiving these feeds — profitable at zero latency, loss-making at a realistic
 
 One lot per quote. At Dhan's retail ₹20/order it loses even at zero latency.
 
-> This `main` branch (tag `classic-mm-v1`) is the complete classic market-making study. A
-> separate branch, `rv-market-maker`, explores strategies whose edge is not speed.
+> On `main` (tag `classic-mm-v1`) this is the complete classic market-making study; the
+> `rv-market-maker` branch explores strategies whose edge is not speed.
 
 ---
 

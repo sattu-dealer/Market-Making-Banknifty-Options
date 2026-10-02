@@ -2,124 +2,172 @@
 
 **BANKNIFTY options market making: an execution-realism study.**
 
-> **What this document is.** The working brief and handover for this repo. It replaces the
-> original kickoff brief, which is preserved verbatim at
-> [docs/kickoff_brief_original.md](docs/kickoff_brief_original.md) because it is the
-> provenance of the project's binding constraints and nothing here is committed to git yet.
+> **What this document is.** The working brief and complete handover for this repo. It is
+> written for someone — human or model — picking the work up cold, with no access to the
+> conversations that produced it. Reading §0 gives the whole current state; §16 gives a reading
+> order for the rest. Every number in §0 is traceable to a report, a log or a commit named there.
 >
-> It is written for someone — human or model — picking this up cold with no access to the
-> conversations that produced it. It states what exists, what every non-obvious decision
-> was and why, the full external-API reference needed to operate the capture, the
-> mathematics of what has been built and what has not, and what "done" means for each
-> remaining phase.
+> The original kickoff brief is preserved verbatim at
+> [docs/kickoff_brief_original.md](docs/kickoff_brief_original.md); it is the provenance of the
+> binding constraints in §2.
 >
-> **Last updated: 2026-09-30 — capture is closed (10 sessions), the data passed an integrity
-> check, and a rebuilt portfolio market maker is market-neutral and profitable out of sample
-> *at zero latency* — but loses at a realistic 500 ms. See §0 and §20. §17 is kept as history.**
+> **Last updated: 2026-10-02.** Capture is closed. Two lines of work are complete: the classic
+> market-making study (branch `main`, tag `classic-mm-v1`) and a fork exploring latency-tolerant
+> strategies (branch `rv-market-maker`). Both reach conclusive, negative-but-explained results.
 >
-> Dates in this document are absolute. Where an older section says "today" it has been
-> rewritten; if you find a surviving "today", treat it as a bug in this document.
+> **How to read the rest.** §0 is current. §1–§12 are the design record (framing, interfaces,
+> architecture, mathematics) and remain accurate except where a ⚙/⚠ status note says otherwise.
+> §13–§19 are a dated history of open items and plans written between 2026-08-23 and
+> 2026-09-04; each now carries a status banner saying what became of it. §20–§26 describe the
+> work done from 2026-09-30 onward. Appendix A keeps superseded status snapshots for the record.
+>
+> Dates are absolute. If you find a surviving "today", treat it as a bug in this document.
 
 ---
 
-## 0. Status at a glance
+## 0. START HERE — the complete current state (2026-10-02)
+
+### 0.1 The project in one paragraph
+
+A placements-focused research project: simulate passive market making in NSE **BANKNIFTY
+monthly options** on order-book data captured live from the broker Dhan, and measure honestly
+whether it can make money. Ten sessions of 20-level depth were captured (2026-08-24 → 09-04,
+64 GB). A first single-strike quoter lost money and its one profit was a directional bet (§17).
+A rebuilt **portfolio** market maker (§20–§21) captures spread, is market-neutral (R² of PnL on
+the market ≈ 0), and was profitable on five held-out sessions **at zero latency** — but loses at a
+realistic 500 ms latency (§22). A fork then tested two latency-tolerant strategies under
+pre-registered criteria; both failed (§23). **The result:** on this market, edges large enough to
+pay the ~24 bp round-trip statutory cost on option premium decay in under ~0.5 s, and edges slow
+enough to survive that latency are smaller than the cost. Speed squeezes from one side, STT from
+the other. No order was ever placed; no trading endpoint exists in the code.
+
+### 0.2 Branches, tags and what lives where
+
+| Ref | What it is | Head |
+|---|---|---|
+| `main` | The complete **classic** study: capture layer, data QA, Phase 1 and Phase 2 market makers, latency robustness, README written around the classic result | `1f15f8d` (+ doc-only commits after it) |
+| tag `classic-mm-v1` | Pins the classic study exactly as concluded | `1f15f8d` |
+| `rv-market-maker` | Fork from `main` at `1f15f8d`. Adds the smile module, two pre-registered go/no-go studies, their reports, and `DECISIONS.md` #24. **Nothing on this branch modifies the classic code.** | `64aaf76` (+ doc-only commits after it) |
+
+Remote: `https://github.com/sattu-dealer/Market-Making-Banknifty-Options` (both branches and
+the tag are pushed). The user wanted the classic study kept intact "so the classic market maker
+has its own place and importance in quant interviews" — **never merge `rv-market-maker` into
+`main`**. Documentation shared by both (`BRIEFING.md`, `DECISIONS.md`) is kept identical on both
+branches; `README.md` differs (each branch's README describes its own line of work).
+
+Files that exist **only** on `rv-market-maker`: `src/bnfmm/fairvalue/smile.py`,
+`tests/test_smile.py`, `scripts/rv_persistence.py`, `scripts/rv_patient.py`,
+`config/frozen/protocol_rv.yaml`, `config/frozen/protocol_rv_patient.yaml`,
+`reports/rv_strategy1_smile_go_no_go.md`, `reports/rv_strategy2_patient_go_no_go.md`.
+
+### 0.3 State at a glance
 
 | | |
 |---|---|
-| **Phase** | Capture **closed** (entitlement lapsed 2026-09-22; user: no more collection). Phase 2 market maker built, frozen, and evaluated out of sample |
-| **Headline result** | **`mm_v1` is genuine market making (R² on the market ≤0.18) and makes +₹199,537 on 5/5 unseen sessions at zero latency — but −₹40,500 at 500 ms order latency and −₹96,808 at 1000 ms.** The edge is smaller than the cost of not being fast. §20.6, `DECISIONS.md` #23 |
-| **Data** | **10 sessions**, 2026-08-24 → 2026-09-04, 64 GB. Integrity verdict: fit for simulation, one tape bug fixed. `reports/data_integrity.md` |
-| **Tests** | **580 collected: 579 passing, 1 failing** — the known stale-master test, §13.9 (now safe to fix, see below) |
-| **Configurations tried** | 26 on develop days (`reports/config_log.jsonl`); holdout read once (`reports/holdout_log.md`) |
-| **Broker** | Dhan (DhanHQ v2). Entitlement **lapsed**. No order endpoint exists in the repo |
-| **Instrument** | BANKNIFTY monthly options, ±11 strikes around ATM, both legs, front series |
-| **Open gap** | No index spot was ever captured (§9.4) — the forward is parity-only |
-| **Committed to git** | **Nothing.** Deferred by user instruction; the exposure is now larger (§13.1) |
+| **Capture** | **Closed** by user decision (2026-09-30: "we are not collecting anymore data"). Dhan Data API entitlement lapsed 2026-09-22 19:28:31 IST. Last session captured: 2026-09-04 |
+| **Data** | 10 sessions, `data/` (gitignored, local only, ~64 GB). 8 usable for quoting studies (Aug 26 excluded by a coverage rule; Aug 24/25 excluded by a pre-registered expiry rule). Integrity verdict: fit for simulation — §21.1, `reports/data_integrity.md` |
+| **Tests** | `main`: 583 collected, 582 pass. `rv-market-maker`: 587 collected, 586 pass. The one failure on both is the known stale-master test (§13.9) |
+| **Code size** | ~13.7k lines in `src/` + `scripts/` + `main.py`; tests in `tests/` |
+| **Configurations ever run** | 41 lines in `reports/config_log.jsonl` (27 before the mm_v1 freeze = 26 distinct; 12 post-freeze robustness runs of the frozen strategy; 2 RV measurements) |
+| **Holdout reads** | 2, both of the frozen mm_v1, both logged in `reports/holdout_log.md` (§22.4) |
+| **Git** | Everything committed and pushed. Author `sattu-dealer <just4pc1117@gmail.com>` set in the repo-local config only |
+| **Broker / instrument** | Dhan DhanHQ v2; BANKNIFTY monthly options (no weeklies exist), front series, ATM ±11 strikes on the depth feed |
+| **Environment** | Fedora, 24 cores, 15 GB RAM; Python 3.14.7 in `.venv/` (`.venv/bin/python`). Memory is the binding resource — §25 |
 
-### What changed on 2026-09-30
+### 0.4 Results ledger — every result that matters, with where it comes from
 
-1. **Capture is over.** Nothing was recorded after 2026-09-04 (one more session than §9.5 lists).
-   The user has decided no more data will be collected.
-2. **The 0.15% options STT rate is verified** (Union Budget 2026, effective 2026-04-01) — §13.10
-   closed; `config/costs.yaml` records the sources.
-3. **§13.11 closed.** `scripts/snapshot_contracts.py` now falls back to raw-log preambles and
-   resolves ids within `(exchange, segment)`; all 19 runs across 10 days have correct sidecars.
-   The full 2026-08-23 master is archived in `data/reference/archive/`, so the master can now be
-   refreshed and §13.9's failing test fixed (a 36 MB public download — ask first).
-4. **The holdout split is frozen and enforced in code** (`config/frozen/protocol.yaml`,
-   `analysis/holdout.py`) — §18.5's machinery now exists.
-5. **Data integrity checked** (`data/qa.py`, `scripts/qa_report.py`, `reports/data_quality.md`,
-   `reports/data_integrity.md`): no corrupt books; a tape bug that booked replayed packets as
-   trades fixed (DECISIONS #20); the depth feed runs a stable 225 ms behind the quote feed.
-6. **The market maker was rebuilt as one portfolio** (`sim/portfolio.py`, `scripts/mm.py`,
-   `fairvalue/black76.py`) and is profitable out of sample — §20, DECISIONS #21–22.
+**Classic line (`main`)**
 
-### Next actions, if the project continues
+| Result | Numbers | Source |
+|---|---|---|
+| Phase 0: options, not futures | Options round-trip floor 47 ticks member vs futures 163; options STT on premium (58× smaller base) | `reports/phase0_instrument_selection.md`, §3.1 |
+| Phase 1: single-strike quoter, Aug 24/25 | Loses in every configuration; only profit (+₹92,433) was 58% inventory PnL — a bet | §17, `reports/phase1_market_maker_results.md` |
+| Data integrity | 34.3M option snapshots: 0 off-tick, 0 non-positive, 0.004% crossed/locked; tape bug fixed (stale-packet replays, 5.8% phantom volume on Sep 4); depth feed lags quote feed 225 ms | §21.1, `reports/data_integrity.md`, `reports/data_quality.md` |
+| Phase 2 develop (Aug 27+28), frozen mm_v1, 0 ms | +₹127,594 member; +₹105,441 liquidated; R² ≤ 0.017 | §20, `reports/phase2_portfolio_market_maker.md` |
+| **Phase 2 holdout (Aug 31–Sep 4), 0 ms** | **+₹199,537** member, **+₹155,159** liquidated, 5/5 days; capture ₹735,694 vs inventory −₹222,432; R² 0.002–0.18; per-fill 95% CI [₹6.34, ₹20.40] | §20.1 |
+| Retail cost (Dhan ₹20/order, 1 lot), holdout 0 ms | −₹121,494 | §20.1 |
+| **Latency, holdout** | **500 ms: −₹40,500** (liquidated −₹84,754), 1/5 days; 1000 ms: −₹96,808 | §22.2, `DECISIONS.md` #23 |
+| Latency, develop | 0 / 500 / 1000 ms: +₹127,594 / +₹13,323 / −₹33,823 | §22.2 |
+| Book source, develop (0 ms) | depth +₹127,594; depth merged with fresher quote feed +₹69,666; quote feed alone −₹39,520 | §22.3 |
+| Longer-dated series (Oct; Sep on Aug 24/25) | **Not run** — the quote-feed adapter failed validation | §22.3 |
 
-1. **Write-up (Phase 6).** `README.md` still predates both §17 and §20 and is the public artifact.
-   The story: Phase 1's negative result, the diagnosis, the four structural changes, the frozen
-   holdout. Keep the Phase 1 bugs (§17.8) — they remain the strongest methodological content.
-2. **Commit**, once the user sets `user.name`/`user.email`; rename `master` → `main` at the first
-   commit (§13.1). Everything is untracked.
-3. **Refresh the master and fix §13.9** (download needs the user's go-ahead).
-4. **Close the remaining analysis-layer test gaps**: `book/reconstruct.py`, `fairvalue/parity.py`,
-   `strategy/quoter.py` (Phase 1 path), `data/channels.py`, `data/chain.py`. The new modules
-   (`qa`, `tape` differencing, `merge`, `black76`, `portfolio`, `holdout`) are tested.
-5. **Do not re-tune `mm_v1` on the holdout days.** They are spent. Any `mm_v2` has no clean
-   out-of-sample data in this corpus; say so if one is built.
+**Fork (`rv-market-maker`)** — both go/no-go criteria committed and pushed before measuring.
 
-### Superseded status (2026-09-03), kept for the record
+| Strategy | Result | Source |
+|---|---|---|
+| #1 Smile relative value | Residual autocorrelation 0.587 at 5 s (PASS ≥0.5); correction toward smile after 1 s delay +4.46 bp vs 11.85 bp per-side cost (FAIL) → **NO-GO** | §23.3, `reports/rv_strategy1_smile_go_no_go.md` |
+| #2 Patient liquidity | Best cell δ=100 bp, 5 min: +21.63 bp vs 23.71 bp round trip, t −0.07; δ=50 bp picked off (−3.75 bp at 30 s) → **NO-GO** | §23.4, `reports/rv_strategy2_patient_go_no_go.md` |
 
-### What changed since the last revision of this document
+### 0.5 The conclusion, stated so it survives an interview
 
-The previous revision was written on the night of 2026-08-23/24, before any real market data
-existed. Four things have happened since, in order:
+1. **A correctly built market maker on this data is genuine market making.** After four
+   structural changes (§20.2) its profit comes from spread capture, its inventory term is
+   negative, and its PnL is uncorrelated with the market. Phase 1's "profit" was not.
+2. **That edge is shorter-lived than the latency of anyone receiving these feeds.** Trades
+   arrive ~0.3–0.5 s after they execute; at 500 ms of order latency the held-out profit becomes a
+   loss. In the terms of §11.6: the latency slope answers "strategy or co-location bet", and it
+   answers co-location.
+3. **Latency-tolerant edges exist but cannot pay statutory costs.** Smile mispricings persist
+   for tens of seconds but are ~4.5 bp against ~11.9 bp per side; patient deep quotes see
+   reversion of ~17–22 bp against a ~23.7 bp round trip.
+4. **Therefore** passive market making in BANKNIFTY options from a non-co-located seat is
+   squeezed out by speed on one side and STT on the other. Every step of that conclusion is a
+   measurement with its configuration logged, not an assertion.
 
-1. **Capture ran, and keeps running.** Nine sessions are on disk (2026-08-24 through
-   2026-09-03, with 2026-09-03 still in progress as this is written). The depth decoder —
-   the one risk that could not be retired offline — decoded real bytes correctly. §9.3 is
-   now a retired risk rather than an open one.
-2. **Phases 2–4 were built out of order and fast**, because the user asked for a working
-   market maker on the first two days rather than for the scheduled Sep 1–21 sequence.
-   `book/`, `fairvalue/`, `sim/fills/` and `strategy/` are no longer empty. §6.
-3. **The market maker was run on 2026-08-24 (1 DTE) and 2026-08-25 (0 DTE, expiry).** It
-   loses money in every configuration tested. The one profitable cell was attacked and
-   turned out to be a directional bet, not market making. Full account in §17 and
-   `reports/phase1_market_maker_results.md`.
-4. **Two simulator bugs were found and fixed, each of which manufactured profit.** Both
-   were caught by disbelieving a good number rather than by a failing test. `DECISIONS.md`
-   #17. This is the most transferable methodological content in the repo.
+What it is **not** safe to claim: that longer-dated options are profitable (never validly
+tested, §22.3); that the zero-latency figure is achievable money (it is an upper bound on what
+the quoting logic captures); that any result generalises beyond one monthly cycle at 25–33 DTE.
 
-### The immediate next actions, in priority order
+### 0.6 Rules for whoever continues — these protect the credibility of everything above
 
-**§18 is the plan of record for getting the strategy to breakeven; §19 is the plan for the data
-gaps. Neither has been implemented.** Both were written 2026-09-04 and supersede the looser
-"what would have to change" list in §17.6.
+* **No order placement, ever** (§2, enforced by `tests/test_no_order_placement.py`).
+* **The classic holdout (Aug 31 – Sep 4) is spent for classic tuning.** Any change to mm_v1 is
+  mm_v2 and has no untouched data. Say so in any write-up.
+* **The RV validation days (same dates) are untouched by any RV analysis.** Both RV strategies
+  were NO-GO and never built, so those days remain clean *for the RV family only* — but they were
+  read by the classic study, so results on them are weaker evidence (stated in
+  `config/frozen/protocol_rv.yaml`).
+* **Pre-register before measuring.** Commit and push the go/no-go criteria, then run. Every run
+  of `scripts/mm.py`, `rv_persistence.py`, `rv_patient.py` and `backtest.py` is appended to
+  `reports/config_log.jsonl` automatically; quote "from N configurations".
+* **Holdout days go through the loader.** `bnfmm.analysis.holdout.require_access` refuses them
+  without `--unlock-holdout "REASON"` and logs every unlock to `reports/holdout_log.md`. Never
+  edit either log by hand. Never edit a frozen file after it has been used; copy it to a new name.
+* **Do not reuse any trade tape computed before 2026-09-30** (tape bug, `DECISIONS.md` #20).
+* **Report both cost profiles** (member and Dhan) and the capture/inventory split on every result.
+* **Do not merge `rv-market-maker` into `main`.**
 
-1. **Keep capturing** — and **build the feed watchdog** (§19.6). §15's check is one glance at
-   09:20; on Aug 26 the feed died at 10:52 and nobody noticed for four and a half hours. An alarm
-   on >30 s of no depth frames turns a lost session into a lost minute. **A session happens once**,
-   and entitlement lapses 2026-09-22, so ~13 remain. This outranks every analysis item below.
-2. **Verify the 0.15% options STT rate** (§13.10, §18.1). Sell-side STT at that rate is
-   **₹0.3054/unit against a captured half-spread of ₹0.3065** — it *is* the result. At 0.10% the
-   existing run clears on the member profile with **no strategy change at all.** Twenty minutes,
-   highest leverage in the project.
-3. **Snapshot the five manifest-less captures** (§13.11). **The only item with a hard external
-   deadline: 2026-09-29**, when the vendor prunes the September series and those captures become
-   20-level books of unknown strikes. Recoverable from the raw-log preambles today, not afterwards.
-4. **Wire the cost floor into the quoter's gate** (§18.4 step 1). `breakeven_ticks()` exists and
-   the gate is a hardcoded `1.0` placeholder — **the strategy computes its cost floor for the
-   report and ignores it when deciding whether to quote** (§18.2).
-5. **Freeze the holdout before touching any knob** (§18.5). Non-optional: §18's levers are five
-   knobs on two days, and a number swept into existence is worth less than the negative result it
-   replaced.
-6. **Close the `PnlGrid` gap** (§5.1). A broken guarantee, not a to-do.
-7. **Write tests for the six untested new modules** (§13.2). They carry the headline result.
-8. **Analyse the seven unexamined sessions** (§17.7) — the largest available gain, since the data
-   is already on disk. Do the §14 Phase 1c quality pass first, with uptime as a *written*
-   inclusion criterion (§19.6).
+### 0.7 What could be done next (none of it is in progress)
 
----
+In the order I would recommend:
+
+1. **Cost-sensitivity / breakeven-STT analysis** (no new data needed). For the frozen mm_v1 at
+   500 ms and for both RV signals, compute the STT rate (or total bp cost) at which each breaks
+   even. Turns the conclusion into a number: "viable if round-trip cost were X bp". Cheap,
+   uses existing scripts with a modified `config/costs.yaml` copy. Pre-register the cost grid.
+2. ~~**README for the `rv-market-maker` branch.**~~ Done 2026-10-02: the branch README now opens
+   with a fork summary (§23) and links back to `main`.
+3. **Smile signal as an ingredient** (new hypothesis, needs its own pre-registration): use the
+   leave-one-out smile value as fair value inside the passive quoter. Still latency-exposed, so
+   expect a modest effect; the RV validation days are the only clean data left for it.
+4. **Housekeeping**: refresh the instrument master and fix §13.9 (a 36 MB public download from
+   Dhan — ask the user first; the 2026-08-23 master is archived so nothing is lost); run
+   `ruff check` (§13.4); remove the two dangling `sim.fills.sensitivity` references (§13.13);
+   tests for the remaining untested modules (§13.2).
+5. **More data** would change everything above — a longer window, other expiry cycles, a spot
+   index feed — but the user has decided not to collect more.
+
+### 0.8 Project timeline
+
+| Date | Event |
+|---|---|
+| 2026-08-23 | Kickoff; Phase 0 (instrument choice: options); capture layer built |
+| 2026-08-24 → 09-04 | 10 sessions captured (Aug 26 lost to an expired token) |
+| 2026-08-26 → 09-03 | Phase 1 single-strike market maker built and measured on Aug 24/25 — negative |
+| 2026-09-04 | §18/§19 plans written; capture stopped after this session |
+| 2026-09-22 | Dhan entitlement lapsed |
+| 2026-09-30 | STT verified; contract sidecars fixed; holdout frozen; data integrity pass; portfolio market maker built; mm_v1 frozen and evaluated on the holdout; latency and book-source robustness; first commit and push |
+| 2026-10-02 | `main` tagged `classic-mm-v1`; README rewritten; `rv-market-maker` forked; RV #1 and #2 pre-registered and measured — both NO-GO |
 
 ## 1. Origin, framing, and how the framing changed
 
@@ -161,6 +209,10 @@ Why that framing is stronger for the stated purpose:
 The headline artifact is a **2×2 grid** (§5.1), not a number.
 
 ### 1.3 The redirection to harvesting-first (this is the most important thing to understand)
+
+> ⚙ **Status 2026-10-02.** Harvesting is over: capture stopped after 2026-09-04 and the user
+> decided on 2026-09-30 that no more data will be collected. The principle below explains why the
+> capture layer is so heavily tested; it no longer drives scheduling.
 
 The original plan built the simulator first and captured data alongside. That was inverted
 on explicit instruction, and the inversion is the reason the repo looks the way it does:
@@ -502,6 +554,15 @@ again, so every contract fact is **resolved at runtime and only constrained in c
 
 ## 5. Decisions enforced by code rather than by discipline
 
+> ⚙ **Status 2026-10-02 for the three gaps in the table below.** (1) `PnlGrid` is still bypassed:
+> the Phase 2 driver `scripts/mm.py` reports both brokerage profiles on every run but emits plain
+> floats, and the queue convention is a flag (`--optimistic-queue`), run as a robustness check
+> (§20). (2) Segments are measured by `data/qa.py` and the inclusion rule uses them, but the
+> simulators still run a whole day with a staleness rule rather than per-segment. (3) The cost
+> floor **is now in the quoting decision**: `sim/portfolio.py` requires each side to clear its
+> share of the round-trip statutory cost and stands a leg down when its spread is below 37.8 bp of
+> fair value (§20.2).
+
 Reporting discipline that depends on remembering to be disciplined fails. Each of these
 has a structural guarantee.
 
@@ -642,78 +703,104 @@ dropout — and since there is no sequence number (§4.4), there is no other way
 
 ## 6. Repo map
 
+⚙ **Rewritten 2026-10-02.** Line counts are current. "(rv)" marks files that exist only on the
+`rv-market-maker` branch. Tests per file in parentheses.
+
 ```
 BNFMM/
-├── main.py                     935  Single entry point. Two modes. §8
-├── BRIEFING.md                      This document
-├── DECISIONS.md                741  19 numbered decisions + sub-entries, with reasoning
-├── README.md                   474  Public-facing artifact. ⚠ predates §17 — stale
-├── pyproject.toml               41  Py 3.14, ruff configured (line-length 100), not installed
-├── .env.example                     Which portal fields matter and which to ignore
-├── .env                             GITIGNORED. Client id + 24 h access token (Path B)
+├── main.py                      935  Single entry point: record (capture) / analyse modes. §8
+├── BRIEFING.md                       This document (identical on both branches)
+├── DECISIONS.md                      26 numbered decisions with reasoning (identical on both branches)
+├── README.md                         Public summary. main: classic result. rv branch: same file (§0.7 item 2)
+├── pyproject.toml                    Py >=3.11 (venv is 3.14.7); ruff configured, never run (§13.4)
+├── .env.example                      Which Dhan portal fields matter. .env is gitignored
 │
 ├── config/
-│   ├── capture.yaml            208  The harvesting universe. §7.4
-│   ├── instruments.yaml         39  The *quoting study* scope. Deliberately different
-│   ├── costs.yaml              125  Statutory stack + broker profiles. §12
-│   └── market_calendar.yaml     39  Session windows + holidays. §8.3
+│   ├── capture.yaml                  Harvesting universe (48 depth / 328 feed ids). §7.4 — capture is closed
+│   ├── instruments.yaml              Quoting-study scope; min_days_to_expiry: 3 (pre-registered 2026-08-23)
+│   ├── costs.yaml                    Statutory stack + broker profiles; STT verified 2026-09-30. §12
+│   ├── market_calendar.yaml          Session windows; empty holiday list (moot now). §8.3
+│   └── frozen/
+│       ├── protocol.yaml             Classic develop/holdout split + inclusion rule (sha256 0e865025…). §21.3
+│       ├── mm_v1.yaml                The frozen classic strategy (sha256 4f144314…). §20
+│       ├── protocol_rv.yaml     (rv) RV develop/validation split + strategy #1 go/no-go (sha256 9b070f78…). §23.2
+│       └── protocol_rv_patient.yaml (rv) Strategy #2 go/no-go. §23.4
 │
 ├── src/bnfmm/
-│   ├── data/                        THE CAPTURE LAYER — heavily tested, stable
-│   │   ├── protocol.py         849  Both wire decoders. 75 tests. §4.2–4.4
-│   │   ├── universe.py         797  Resolve the capture universe against the caps. 60 tests
-│   │   ├── store.py            717  Buffered Parquet, two clocks, crash-safe. 44 tests
-│   │   ├── rawlog.py           700  Append-only byte log — the safety net. 52 tests
-│   │   ├── channels.py         668  Async channel state machines. ⚠ 0 tests
-│   │   ├── instruments.py      399  Master parsing, contract + spot resolution. 37 tests
-│   │   ├── chain.py            272  Option-chain REST parsing. ⚠ 0 tests
-│   │   ├── reconnect.py        271  should_reconnect + backoff, pure. 43 tests
-│   │   └── auth.py             206  Env secrets, TOTP, URL redaction. 31 tests
-│   │
-│   ├── book/                        THE ANALYSIS LAYER — new, lightly tested. §17
-│   │   ├── reconstruct.py      281  Per-side depth rows → two-sided snapshots. ⚠ 0 tests
-│   │   └── tape.py             225  Trade tape differenced from volume. ⚠ 0 tests
+│   ├── data/                         CAPTURE + QA
+│   │   ├── protocol.py          849  Both wire decoders (75)
+│   │   ├── universe.py          797  Capture universe vs connection caps (60)
+│   │   ├── store.py             717  Parquet store, two clocks, read_capture (44)
+│   │   ├── rawlog.py            700  Append-only raw byte log, read_preamble (52)
+│   │   ├── channels.py          668  Async capture channels (0 — §13.2)
+│   │   ├── instruments.py       399  Instrument master parsing (37)
+│   │   ├── qa.py                290  Data-quality checks: coverage, gaps, book/tape sanity, presence (16). §21.1
+│   │   ├── chain.py             272  Option-chain REST parsing (0 — §13.2)
+│   │   ├── reconnect.py         271  Reconnect policy (43)
+│   │   └── auth.py              206  Credentials, TOTP, URL redaction (31)
+│   ├── book/
+│   │   ├── reconstruct.py       281  Depth rows → BookSeries; align() LOCF (0 direct — §13.2)
+│   │   ├── tape.py              247  Trade tape from cumulative volume; running-max rule (8). §21.1
+│   │   └── merge.py             130  Causal depth + quote-feed merge; load_quote_ladders (5). §22.3
 │   ├── fairvalue/
-│   │   ├── parity.py           308  Cross-strike implied forward + bounds. ⚠ 0 tests
-│   │   └── microprice.py       105  Size-weighted mid. ⚠ 0 tests
+│   │   ├── parity.py            308  Cross-strike parity forward (0 direct — §13.2)
+│   │   ├── microprice.py        105  Microprice, imbalance, depth-weighted micro (0 direct)
+│   │   ├── black76.py            95  Price, delta, vega, implied vol — risk only (11). §21.2
+│   │   └── smile.py         (rv)  78  Leave-one-out weighted IV smile (4). §23.2
 │   ├── strategy/
-│   │   └── quoter.py           199  Two-sided quoter, inventory skew. ⚠ 0 tests
+│   │   └── quoter.py            199  Phase 1 single-leg quoter (0 — §13.2). Superseded by sim/portfolio.py
 │   ├── sim/
-│   │   ├── backtest.py         454  run_day, huang_stoll, decompose_pnl. 9 tests (decomp only)
-│   │   ├── costs.py            418  Statutory stack, OrderCost, profiles. 48 tests
-│   │   └── fills/depletion.py  422  Snapshot depletion fill model. 22 tests
+│   │   ├── portfolio.py         630  ★ Phase 2 portfolio market maker + summarise() (10). §21
+│   │   ├── backtest.py          454  Phase 1 run_day, huang_stoll, decompose_pnl, Position (9 in test_pnl_decomposition)
+│   │   ├── costs.py             418  CostModel, OrderCost, breakeven_ticks (48)
+│   │   └── fills/depletion.py   475  Fill model; activation latency; cancel_at (24 in test_fills). §21.2, §22.1
 │   ├── analysis/
-│   │   ├── results.py          167  PnlGrid, tier enum. 28 tests. ⚠ bypassed — §5.1
-│   │   ├── quote_size.py       110  Fixed-brokerage vs size trade-off
-│   │   └── report.py            97  Renderer that refuses synthetic headlines
-│   └── synthetic/                   EMPTY — Tier C generator, still deferred
+│   │   ├── holdout.py           195  Frozen-protocol loader, require_access, config log (13). §21.3
+│   │   ├── results.py           167  PnlGrid, Tier (28) — not used by Phase 2 (§5.1)
+│   │   ├── quote_size.py        110  Brokerage-vs-size arithmetic
+│   │   └── report.py             97  Renderer that refuses synthetic headlines
+│   └── synthetic/                    Empty — Tier C generator never built
 │
 ├── scripts/
-│   ├── capture.py              513  The capture driver. Called by main.py in-process
-│   ├── phase0_recon.py         461  Reproduces the viability report
-│   ├── backtest.py             430  ★ Run the market maker over captured days. §17
-│   ├── check_entitlement.py    391  Read-only probe: which API surfaces answer
-│   ├── chain_poll.py           252  Standalone option-chain poller
-│   ├── snapshot_contracts.py   169  Rebuild a contracts sidecar. ⚠ buggy for indices, §13.11
-│   ├── strike_economics.py     143  Arithmetic screen: spread vs cost floor. §17.2
-│   └── refresh_master.py        40  Download the instrument master
+│   ├── mm.py                    472  ★ Phase 2 driver: build day, run portfolio, report, log. §21.4
+│   ├── qa_report.py             338  Corpus-wide data QA → reports/data_quality.md. §21.1
+│   ├── snapshot_contracts.py    235  Contract sidecars per capture run (manifest or raw-log preamble). §13.11
+│   ├── rv_persistence.py   (rv) 188  Strategy #1 go/no-go measurement. §23.3
+│   ├── rv_patient.py       (rv) 147  Strategy #2 go/no-go measurement. §23.4
+│   ├── backtest.py              448  Phase 1 driver (holdout-guarded since 2026-09-30). §17.10
+│   ├── strike_economics.py      143  Per-strike spread vs cost-floor screen. §17.2
+│   ├── capture.py               513  Capture driver (capture closed)
+│   ├── phase0_recon.py          461  Reproduces the Phase 0 report
+│   ├── check_entitlement.py     391  Read-only API probe
+│   ├── chain_poll.py            252  Standalone option-chain poller
+│   └── refresh_master.py         40  Download the instrument master (do not run without §0.7 item 4)
 │
-├── tests/                           518 tests (517 pass, 1 known failure). §13.8
+├── tests/                            21 files (22 on rv). Counts per file shown above; total §0.3
 ├── reports/
-│   ├── phase0_instrument_selection.md   248  Why options, not futures. Reproducible
-│   └── phase1_market_maker_results.md   ★ The measured result. Read this second
+│   ├── phase0_instrument_selection.md   Why options, not futures
+│   ├── phase1_market_maker_results.md   Phase 1 (negative) result
+│   ├── data_integrity.md                Verdict on the corpus (hand-written)
+│   ├── data_quality.md                  QA tables (generated by scripts/qa_report.py)
+│   ├── phase2_portfolio_market_maker.md Phase 2 result, latency caveat first
+│   ├── rv_strategy1_smile_go_no_go.md   (rv) NO-GO write-up
+│   ├── rv_strategy2_patient_go_no_go.md (rv) NO-GO write-up
+│   ├── config_log.jsonl                 Every configuration ever run (append-only, committed)
+│   ├── holdout_log.md                   Every holdout unlock (append-only, committed)
+│   ├── mm/   (gitignored, local only)   Per-run JSON summaries and fill dumps (*.npz). §21.5
+│   ├── qa/   (gitignored, local only)   Per-day per-instrument QA JSON
+│   └── rv/   (gitignored, local only)   go_no_go.json, patient_go_no_go.json
 ├── docs/kickoff_brief_original.md       The original brief, verbatim
-└── data/                                41 GB, 9 sessions. §9.5
-    ├── reference/api-scrip-master-detailed.csv   36.1 MB, 212,736 rows
-    ├── tier_a/raw/{depth,feed,chain}/date=…      37 GB of .bnrl byte logs — the primary
-    ├── tier_a/parquet/{depth,quotes,sessions}/   4 GB, the derived read path
-    └── tier_b/                                   EMPTY — REST backfill, never done
+└── data/  (gitignored, local only)      Captured corpus, ~64 GB. §9.5
+    ├── reference/api-scrip-master-detailed.csv   Instrument master as of 2026-08-23 (stale on purpose)
+    ├── reference/archive/                         Full master copy + BANKNIFTY slice, 2026-08-23
+    ├── tier_a/raw/{depth,feed,chain}/date=…/      .bnrl raw byte logs — the primary artifact
+    └── tier_a/parquet/{depth,quotes,sessions}/    Derived read path; sessions/ holds manifests + contract sidecars
 ```
 
-**Reading the ⚠ marks.** They are all the same fact seen in different places: the capture
-layer has 400+ tests and the analysis layer has 31. That asymmetry is explained in §1.3 and
-is the largest open risk in the repo, because the analysis layer is what produced the
-result in §17.
+**What a fresh clone does not have:** `data/` and the three gitignored report folders. Without
+`data/` no script that reads market data can run; the tests (which use fixtures) and the
+committed reports and logs are what a clone can check. The capture corpus is on the original
+machine only (`/home/sattu-dealer/Desktop/BNFMM/data`).
 
 ### 6.1 Why `config/capture.yaml` and `config/instruments.yaml` both exist
 
@@ -1168,34 +1255,36 @@ day one. That check still does not exist.
 
 ### 9.5 The captured corpus
 
-Nine sessions, 41 GB, all Tier A. `data/tier_a/raw/` holds the byte logs (37 GB) and is the
-primary artifact; `data/tier_a/parquet/` (4 GB) is the derived read path (§7.2).
+⚙ **Final, 2026-10-02. Capture is closed; this table will not change.** Coverage is of the
+09:15–15:30 continuous session, from `reports/data_quality.md` (gaps > 30 s end a segment).
 
-| Date | Contract | DTE | Depth Parquet | Quotes Parquet | Note |
+| Date | Series quoted (DTE) | Runs | Depth coverage | Status for quoting studies | Notes |
 |---|---|---|---|---|---|
-| Mon 2026-08-24 | August | 1 | 331 MB | 382 MB | First real bytes. Used in §17 |
-| Tue 2026-08-25 | August | 0 | 350 MB | 408 MB | Expiry day. Used in §17 |
-| Wed 2026-08-26 | September | 34 | **66 MB** | **53 MB** | ⚠ Anomalously short — §13.12 |
-| Thu 2026-08-27 | September | 33 | 323 MB | 278 MB | |
-| Fri 2026-08-28 | September | 32 | 317 MB | 285 MB | |
-| Mon 2026-08-31 | September | 29 | 321 MB | 276 MB | |
-| Tue 2026-09-01 | September | 28 | 286 MB | 250 MB | |
-| Wed 2026-09-02 | September | 27 | 157 MB | 136 MB | Partial — capture ended ~12:21 |
-| Thu 2026-09-03 | September | 26 | 90 MB+ | 74 MB+ | **In progress as written** |
+| Mon 2026-08-24 | Aug (1) | 3 | 96.8% | excluded by `min_days_to_expiry: 3` | Open lost: capture began 09:27:01. Used in Phase 1 (§17) |
+| Tue 2026-08-25 | Aug (0, expiry) | 2 | 99.1% | excluded by `min_days_to_expiry` | 4 gaps 35–88 s in first 25 min. Used in Phase 1 |
+| Wed 2026-08-26 | Sep (34) | 3 | 19.1% | **excluded** (coverage rule) | Token expired; feed dead from 10:44 (§13.12) |
+| Thu 2026-08-27 | Sep (33) | 2 | 98.8% | classic develop; RV develop | One 271 s gap at 13:20 |
+| Fri 2026-08-28 | Sep (32) | 1 | 100.0% | classic develop; RV develop | Cleanest day |
+| Mon 2026-08-31 | Sep (29) | 1 | 99.8% | classic holdout; RV validation | One 34 s gap |
+| Tue 2026-09-01 | Sep (28) | 2 | 86.4% | classic holdout; RV validation | 51-min gap 12:32–13:23 (restart) |
+| Wed 2026-09-02 | Sep (27) | 1 | 48.3% | classic holdout; RV validation | Capture ended 12:16 (half day) |
+| Thu 2026-09-03 | Sep (26) | 2 | 94.9% | classic holdout; RV validation | 16-min gap 10:06–10:22 (restart) |
+| Fri 2026-09-04 | Sep (25) | 2 | 77.5% | classic holdout; RV validation | Capture ended 14:07; duplicate-packet storm 09:30–11:30 and a stale-replay burst ~12:23 on the quote feed (both handled, §21.1) |
 
-Every session carries **48 depth instruments** (20-level book) and **326 quote instruments**
-(the wider Full-packet universe) — the caps arithmetic of §7.4, holding exactly as designed
-across all nine days.
+Every session has **48 depth instruments** (46 front-series options = ATM ±11 strikes, plus the
+two futures) and **326 quote-feed instruments** (front ±50 and next ±30 strikes, both futures;
+the 2 index ids never produced rows, §9.4). Depth Parquet is ~320 MB on a full day; raw byte logs
+are the bulk of the 64 GB.
 
-**Disk is not a constraint.** 41 GB used, 906 GB free. The §14 threshold "if compressed
-Parquet exceeds ~2 GB/day, narrow the depth band" was never approached: the worst day is
-~740 MB of Parquet, and even counting raw bytes the peak is ~5 GB/day.
+**What exists beyond the front-month depth band:** the next-month series (Sep on Aug 24/25 at
+35–36 DTE; Oct on Aug 27 → Sep 4 at 53–61 DTE) and front-month strikes beyond ±11 exist **only
+on the quote feed** (5-level book, event-driven, ~1.6 packets/s on liquid legs). The Oct series
+is thin (~470k units/day across 61 strikes, ~1% of the front month). See §22.3 for why these were
+not used.
 
-**Only two of the nine sessions have been analysed.** Aug 24 and Aug 25 are the entire
-basis of §17. The seven September sessions are captured, unexamined, and are the most
-valuable unexploited asset in the repo — see §17.7.
-
----
+Every capture run has an immutable contract sidecar (`*-contracts.json` next to its manifest in
+`parquet/sessions/date=…/`), so every security id on disk is labelled with its strike, expiry and
+type even after the vendor prunes the master (§13.11).
 
 ## 10. Fair value — the mathematics, and why not LTP
 
@@ -1675,7 +1764,15 @@ against the current circular and update `retrieved:` before publication.
 
 ## 13. Open items, gaps and risks
 
+> **Status banner, 2026-10-02.** This section was written on 2026-09-03/04. Each subsection now
+> opens with a ⚙ line giving its current status. Summary: **resolved** — 13.1, 13.10, 13.11,
+> 13.12; **partly resolved** — 13.2, 13.3; **still open** — 13.4 (ruff), 13.9 (stale-master test,
+> now safe to fix), 13.13 (dangling docstring references); **moot because capture is closed** —
+> 13.5, 13.6, 13.7; **superseded** — 13.8.
+
 ### 13.1 Not committed to git
+
+⚙ **Status 2026-10-02: RESOLVED.** First commit 2026-09-30; everything committed and pushed; branch `main` (renamed from `master`), fork `rv-market-maker`, tag `classic-mm-v1`. Author identity is set in the repo-local git config only. Generated outputs (`reports/mm/`, `reports/qa/`, `reports/rv/`) and `data/` are gitignored.
 
 **70 files pending — 42 staged, 28 untracked — and zero commits.** `git commit` fails with
 "Author identity unknown": `user.name` and `user.email` are unset. This must be resolved by
@@ -1695,6 +1792,8 @@ Deferred by explicit user instruction ("we'll do it much later in the project").
 the latest.
 
 ### 13.2 Test coverage gaps — the real ones
+
+⚙ **Status 2026-10-02: PARTLY RESOLVED.** Tested now: `data/qa.py` (16), `book/tape.py` differencing and classification (8), `book/merge.py` (5), `fairvalue/black76.py` (11), `sim/portfolio.py` (10), `analysis/holdout.py` (13), `fairvalue/smile.py` (4, rv), plus latency and in-flight-cancel tests in `test_fills.py`. The "every subscribed id produced rows" check now exists (`qa.presence`, run by `scripts/qa_report.py`). **Still untested:** `data/channels.py`, `data/chain.py`, `book/reconstruct.py`, `fairvalue/parity.py`, `fairvalue/microprice.py`, `strategy/quoter.py` (Phase 1 only).
 
 **This section has got worse, not better, since it was written.** Two capture-layer modules
 still have zero tests, and six analysis-layer modules totalling 1,569 lines have been added
@@ -1755,6 +1854,8 @@ the Parquet. The check is a dozen lines and would have caught it on day one. It 
 
 ### 13.3 `DECISIONS.md` entries owed
 
+⚙ **Status 2026-10-02: PARTLY RESOLVED.** Entries #20–#24 were added (tape bug, portfolio market maker, mm_v1 holdout, latency, RV fork). The older backlog listed below is still owed.
+
 **The log now runs to #19** (741 lines). The three added since this section was written are
 all Phase 1 findings and all load-bearing for §17:
 
@@ -1785,6 +1886,8 @@ the decision goes); and **why layer 4 of the fair-value ladder was never built**
 
 ### 13.4 Ruff configured but never run
 
+⚙ **Status 2026-10-02: STILL OPEN.** Ruff has still never been run. §0.7 item 4.
+
 `pyproject.toml` has had a `[tool.ruff]` block with `line-length = 100` since day 1 while
 ruff has **never been installed or run**. A repo that declares a linter it has never run is
 a gap a reviewer finds with one two-second command.
@@ -1796,6 +1899,8 @@ in the diff at exactly the point where the diffs are the review. Known long line
 `tests/test_no_order_placement.py:202`. Phase 1c.
 
 ### 13.5 The NSE holiday list is still unverified
+
+⚙ **Status 2026-10-02: MOOT.** Capture is closed; no session will be scheduled again.
 
 `config/market_calendar.yaml` still carries an **empty holiday list**, handled structurally
 rather than guessed — see §8.3. The original blocker was tooling (`WebSearch` returned
@@ -1809,6 +1914,8 @@ The remaining September window (to ~Sep 29) still needs checking against the pub
 and `main.py` will happily wait all day for an open that never comes.
 
 ### 13.6 Suspend can overrun the capture stop
+
+⚙ **Status 2026-10-02: MOOT.** Capture is closed.
 
 Understood and bounded — see §8.2. Mitigation is operational: launch under
 `systemd-inhibit --what=sleep:idle` and keep the charger connected. `main.py` warns if the
@@ -1824,6 +1931,8 @@ trading date: Aug 26 (three), Aug 27 (two), Sep 1 (two), Sep 3 (two). Those are 
 and credential problems, not power problems.
 
 ### 13.7 Token expiry — the failure mode is confirmed, and it is worse than described
+
+⚙ **Status 2026-10-02: MOOT** (historical: the cause of the lost Aug 26 session).
 
 `Session.likely_expired` is a **property**, and when the token comes from the environment
 `issued_at` is set at *load* time because we cannot know when it was actually minted. So
@@ -1849,6 +1958,8 @@ flowing" was an available and wrong reading at 09:20.
 
 ### 13.8 Test count, for reference
 
+⚙ **Status 2026-10-02: SUPERSEDED.** Current counts are in §0.3 and per file in §6.
+
 **518 collected: 517 passing, 1 failing** (§13.9). Per file:
 
 | File | Tests | File | Tests |
@@ -1866,6 +1977,8 @@ analysis layer — 31 tests against 1,569 lines that produce every conclusion in
 §13.2 before drawing comfort from the total.
 
 ### 13.9 ⚠ One failing test: the instrument master has gone stale
+
+⚙ **Status 2026-10-02: STILL FAILING, NOW SAFE TO FIX.** Every capture run has a correct contract sidecar (§13.11) and the full 2026-08-23 master is archived at `data/reference/archive/api-scrip-master-detailed-2026-08-23.csv`, so refreshing the master no longer loses anything. The refresh is a 36 MB download from Dhan's public URL; ask the user before running `scripts/refresh_master.py`. After refreshing, expect `test_master_facts.py` assertions about August/September contracts to need updating, because those series have expired.
 
 ```
 FAILED tests/test_master_facts.py::test_spot_bootstrap_agrees_across_calls_and_puts
@@ -1897,6 +2010,8 @@ Capture currently runs with `--allow-stale-master` to bypass the freshness guard
 
 ### 13.10 ⚠ The 0.15% options STT rate is unverified and the whole conclusion rests on it
 
+⚙ **Status 2026-10-02: RESOLVED — the rate is correct.** Union Budget 2026 raised options STT on sale premium 0.10% → 0.15% and futures STT 0.02% → 0.05%, both effective 2026-04-01, so 0.15% applies to every captured session. Recorded in `config/costs.yaml` (`stt_verified: 2026-09-30`, with sources). Exchange-txn, SEBI and stamp rates were not re-verified.
+
 `config/costs.yaml` carries a literal `VERIFY BEFORE PUBLISHING ANY RESULT` block, retrieved
 2026-08-23 from `https://zerodha.com/charges/`. **It has not been verified, and §17's central
 claim is a direct function of it.**
@@ -1921,6 +2036,8 @@ shown to anyone. Rates have been revised repeatedly (§12.1 records the futures 
 weak. Update `retrieved:` in `costs.yaml` when it is done.
 
 ### 13.11 ⚠ Five capture runs have no manifest, and `snapshot_contracts.py` cannot see them
+
+⚙ **Status 2026-10-02: RESOLVED.** `scripts/snapshot_contracts.py` now reads subscribed ids from the raw-log `BNRLOG1` preamble when a run has no manifest, and resolves ids only within NSE segment D (F&O) and I (indices) — which share no ids — with indices built via `universe.index_contracts` (recorded as `IDX_I`, segment code 0). All **19 runs across 10 days** have sidecars, 0 unresolved ids; the 11 pre-existing sidecars were regenerated with the corrected index segment. The archive slice no longer contains ABB / Adani Enterprises.
 
 Two coupled problems, both about **what a captured day knows about itself**.
 
@@ -2002,6 +2119,8 @@ route index ids through `universe.index_contracts`, and key `resolve()` on
 
 ### 13.12 ⚠ 2026-08-26 is a broken session and should be excluded, not averaged in
 
+⚙ **Status 2026-10-02: RESOLVED.** Aug 26 is excluded mechanically by the inclusion rule in `config/frozen/protocol.yaml` (depth and feed coverage 19% < 25%), not by judgement.
+
 Aug 26 holds **66 MB of depth and 53 MB of quotes against a normal day's ~320 MB and ~280 MB**
 — roughly 20% of a session. It is not a short trading day. Three launches that morning all
 failed, and the one that wrote a manifest recorded:
@@ -2028,6 +2147,8 @@ the §15 morning checklist needs a *per-channel* row-count check rather than a d
 
 ### 13.13 `depletion.py` promises a module that does not exist
 
+⚙ **Status 2026-10-02: STILL OPEN.** `depletion.py` lines ~89 and ~170 still cite `sim.fills.sensitivity`. The queue-convention comparison is now done by `scripts/mm.py --optimistic-queue` (§20, robustness table), so the fix is to point the docstrings there.
+
 `src/bnfmm/sim/fills/depletion.py` references **`sim.fills.sensitivity`** twice — at line 89
 ("the sensitivity of the headline number to the queue rule is a first-class output") and line
 170 ("`sim.fills.sensitivity` measures what happens under the optimistic one"). **There is no
@@ -2048,6 +2169,16 @@ and in a repo whose comments are otherwise load-bearing (§16) it reads worse th
 ---
 
 ## 14. Phase plan, with completion criteria
+
+> ⚙ **Status banner, 2026-10-02 — this plan is finished, not in progress.** Final state of each
+> phase: 1b capture **closed** (10 sessions); 1c consolidation **done in substance** (`data/qa.py`,
+> `scripts/qa_report.py`, contract sidecars; ruff still not run); 2 book/fair value **done** for
+> what the data supports (layer 3 unbuildable, layer 4 built only on the rv branch as
+> `fairvalue/smile.py`); 3 fill simulator **done** (depletion model + activation latency); 4
+> quoting **done** (`sim/portfolio.py`; no Avellaneda–Stoikov baseline was built); 5 attribution
+> and validation **done** (decomposition, Huang-Stoll, β/R², frozen holdout, config log); 6
+> write-up **done for the classic line** (README on `main`, Phase 2 report). The dated text below
+> is the original plan, kept as the record of what was intended.
 
 Phases 0, 0b and 1a are **done**. The market happens once a day and cannot be re-run, so
 everything after 1a runs *while capture continues daily in the background*.
@@ -2286,6 +2417,10 @@ so in those words.
 
 ## 15. Runbook for a capture morning
 
+> ⚙ **Status 2026-10-02: NOT IN USE — capture is closed.** Kept because it is the only record of
+> how the corpus was produced, and would be the starting point if capture were ever resumed (it
+> would need a renewed Dhan Data API subscription and a fresh instrument master).
+
 **This is the procedure that has actually worked for nine sessions.** `main.py --mode record`
 is the designed entry point; the command in daily use is `scripts/capture.py` directly, with
 an explicit stop time and the stale-master override:
@@ -2368,45 +2503,40 @@ unattended (§6.1), so no config edit is normally needed.
 
 ## 16. Reading order for someone starting cold
 
-**Start with §0 and §17 of this document.** §0 is the current state in one screen; §17 is the
-result, and it is negative — knowing that first makes everything else legible. **Then §18 and
-§19, which are the plan of record for what to do about it** — §18 to get the strategy to
-breakeven, §19 for the data gaps. Neither is implemented, so they read as instructions rather
-than findings, and together they are what "picking up the work" currently means. Then:
+⚙ **Rewritten 2026-10-02.**
 
-1. **This document**, §1–§5 — the framing and the decisions that are not up for
-   relitigation. §5.1's ⚠ subsection is the one place where the document admits its own
-   discipline slipped; read it as an instruction, not an apology.
-2. **`reports/phase1_market_maker_results.md`** (230 lines) — the Phase 1 deliverable and the
-   source of every number in §17. Its §2 is the real-vs-simulated labelling table, which is
-   binding (§2 of this document). Its §7 is the limitations, and §17 does not supersede it.
-3. **`DECISIONS.md`** — the long-form reasoning behind each decision. **19 entries**; #9, #12,
-   #13, #15 and #16 are the load-bearing ones for the *data*, and **#17, #18 and #19** for the
-   *result*. **#17 (two simulator bugs that each manufactured profit) is the single most
-   useful entry in the file** for anyone about to trust a fill number.
-4. **`reports/phase0_instrument_selection.md`** — why options, not futures, with the
-   arithmetic. Reproducible via `scripts/phase0_recon.py`.
-5. **`src/bnfmm/data/protocol.py`** — the wire format. Everything downstream is shaped by
-   it, especially the absence of a sequence number.
-6. **`src/bnfmm/sim/fills/depletion.py`** — read the module docstring before the code. It
-   contains the project's central epistemic argument (why a 200 ms snapshot feed cannot support
-   a queue model) and an explicit, signed list of what the model overstates and understates.
-   Ignore its two references to `sim.fills.sensitivity`, which does not exist (§13.13).
-7. **`config/capture.yaml`** — the universe, with the cap arithmetic written out in
-   comments.
-8. **`main.py`** — the operational entry point. But see §15 for the command actually in daily
-   use, which differs.
-9. **§10 and §11 of this document** — the mathematics. These were written as *plans*; each now
-   carries a status subsection recording what was built, what was skipped and what the measured
-   data did to the argument. **Read the status subsections, not just the plans** — §10.2's layer
-   3 is unbuildable and layer 4 was deliberately skipped, and §11.2's diagnostic tree has a
-   measured answer that the tree did not anticipate.
-10. **§13 and §14** last — the open items and the honest phase-plan post-mortem. §13.10 (the
-    unverified STT rate) and §13.11 (five undescribed capture runs) are the two with deadlines.
+**Hour one — the state and the result.**
 
-**Do not read the README.** It predates the market maker and describes a project whose central
-question is still open (§6). Rebuild it from
-`reports/phase1_market_maker_results.md` before showing it to anyone.
+1. **§0 of this document.** Everything current: branches, results ledger, conclusion, rules,
+   next steps. If you read nothing else, read §0.
+2. **`README.md` on `main`** — the public version of the classic result (two minutes).
+3. **`reports/phase2_portfolio_market_maker.md`** — the classic headline, latency caveat first.
+4. **§22 of this document** — the latency and book-source robustness that changed the
+   conclusion. Then **§23** — the fork's two NO-GO results and the combined conclusion.
+
+**Hour two — why it is believable.**
+
+5. **`DECISIONS.md` #17 and #19** — three bugs that manufactured profit, caught by disbelieving
+   good numbers. Then **#20–#24** — everything decided from 2026-09-30 on.
+6. **§17.4 and §17.8** — how a profitable run was shown to be a directional bet, and the method
+   that found the bugs.
+7. **`reports/data_integrity.md`** — the corpus verdict; and **§21.3** — how the holdout and the
+   configuration log are enforced in code.
+
+**Before touching code.**
+
+8. **§21** — how the portfolio simulator, the driver and the guardrails actually work, flag by
+   flag, and how to reproduce every number in §0.4.
+9. **§25** — operational traps on this machine (memory, long runs, process-matching, buffering).
+10. **`src/bnfmm/sim/fills/depletion.py` module docstring** — the central epistemic argument (why
+    a 200 ms snapshot feed cannot support a true queue model) and the signed list of what the
+    fill model over- and understates. Then **`src/bnfmm/sim/portfolio.py`'s docstring**.
+11. **§1–§5** — framing and binding constraints. **§4** only if you will touch the Dhan API
+    (capture is closed). **§10–§12** — the mathematics of fair value, evaluation and costs.
+
+**History, when you need it.** §13–§19 are the dated record of open items and plans; each has a
+⚙ status banner. `reports/phase1_market_maker_results.md` is the Phase 1 deliverable.
+Appendix A holds superseded status snapshots.
 
 **A note on the comments in this codebase.** They are unusually dense, and deliberately so:
 they record *why* a thing is the way it is, especially where the obvious implementation is
@@ -2420,6 +2550,13 @@ implementation was tried first and manufactured profit (`DECISIONS.md` #17).
 ---
 
 ## 17. Phase 1 — the market maker, built and measured
+
+> ⚙ **Status 2026-10-02: HISTORY.** Phase 1 is concluded and superseded by the portfolio market
+> maker (§20–§22). Its code (`strategy/quoter.py`, `sim/backtest.py:run_day`,
+> `scripts/backtest.py`) is still on `main` and still runs; `scripts/backtest.py` now goes
+> through the holdout guard and the config log. Every diagnosis below — pick-off, inventory skew
+> as the strategy, the cost floor — was confirmed and then addressed in §20.2. §17.8's bug
+> stories are still the strongest methodological content in the repo.
 
 **Built 2026-08-26 → 2026-09-03. Run on the two sessions available at the time. The result is
 negative.** Long form in `reports/phase1_market_maker_results.md` (230 lines); reasoning in
@@ -2834,6 +2971,23 @@ front-of-queue convention; `--json` to dump the full result. All of it reads Par
 
 ## 18. The route to breakeven — plan of record, 2026-09-04
 
+> ⚙ **Status 2026-10-02: EXECUTED — here is what each step became.**
+>
+> | Step | Outcome |
+> |---|---|
+> | 0. Verify STT | Done: 0.15% is correct (§13.10). No easy rescue from the cost side |
+> | 1. Cost floor in the gate | Done, in a better form: per-side cost from the rate table + a spread gate in bp of premium (37.8 bp, derived) — §20.2 |
+> | 2. Imbalance conditioning | Measured and rejected: textbook sign confirmed but too weak; the falsification test failed — §20.3 |
+> | 3. Choose contracts with the screen | Superseded: quote the whole ±11 band and let the bp spread gate choose, causally, at each instant |
+> | 4. Size up for Dhan | Not done (member profile was the target; Dhan reported) |
+> | 5. Gap protocol and β/R² | β/R² built into every run (`sim/portfolio.summarise`); the flatten-on-reconnect protocol of §19.4 was not built |
+> | 18.5 protocol | Done exactly: frozen split, config log, both cost columns, capture/inventory split — §21.3 |
+> | 18.6 if no breakeven | Breakeven reached at zero latency, lost at 500 ms (§22) — the §18.6 "requires membership" framing became "requires co-location" |
+>
+> Two new structural changes not anticipated here turned out to matter most: one shared
+> portfolio (Phase 1 ran legs independently) and keeping queue priority (Phase 1 re-placed every
+> 200 ms). §20.2.
+
 **Why this section exists.** The project's value as a portfolio artifact is materially higher if
 the market maker is at least marginally profitable, and the user has asked for that. This section
 is the plan. It is written as a plan and not as a result: **nothing in §18 has been run.**
@@ -3020,6 +3174,12 @@ a positive number obtained by the route §18.5 forbids.**
 
 ## 19. Data gaps — what they do to PnL, and the protocol
 
+> ⚙ **Status 2026-10-02.** Implemented: the inclusion rule as a written, mechanical criterion
+> (`config/frozen/protocol.yaml`, applied by `scripts/qa_report.py`); the β/R² diagnostic (every
+> `mm.py` run). Not implemented: flatten-on-reconnect (§19.4) and formal per-segment simulation.
+> The feed watchdog (§19.6.1) is moot because capture is closed. The holdout R² values of
+> 0.002–0.18 suggest gap-carried inventory is not a material directional channel for mm_v1.
+
 The capture host is a laptop on domestic power and consumer internet — locked decision 8 in §3,
 "capture host: laptop, expect gaps" — and the gaps are real: **Aug 24 has 6 gaps >2 s totalling
 51.1 s and does not start until 09:27:01** (twelve minutes of the open lost); **Aug 25 has 27 gaps
@@ -3193,7 +3353,7 @@ A gap must remain visible as a gap, in the arrays and in the report — which is
 
 ---
 
-## 20. Phase 2 — the portfolio market maker, profitable out of sample
+## 20. Phase 2 — the portfolio market maker (profitable at zero latency; see §22 for 500 ms)
 
 **Built and evaluated 2026-09-30.** Long form: `reports/phase2_portfolio_market_maker.md`.
 Reasoning: `DECISIONS.md` #20–22. Data verdict: `reports/data_integrity.md`.
@@ -3271,4 +3431,497 @@ only) were therefore not run — the adapter failed validation.
 **The honest one-line result for the write-up:** *the quoting logic captures spread and stays
 market-neutral, but on this data the edge is smaller than the cost of latency; profitable market
 making here is a co-location question, not a strategy question.*
+
+## 21. How the Phase 2 machinery works — enough to change it safely
+
+Everything in this section is on both branches unless marked (rv).
+
+### 21.1 Data QA and the tape fix
+
+**`src/bnfmm/data/qa.py`** — pure functions, arrays in, dicts out (16 tests):
+
+| Function | What it returns |
+|---|---|
+| `session_bounds_ns(day)` | Epoch-ns of 09:15:00 and 15:30:00 IST |
+| `segments(ts, max_gap_s)` | Maximal runs with no gap above `max_gap_s` |
+| `coverage(ts, window, max_gap_s=30)` | Fraction of the window inside segments, gap counts, largest gap, list of large gaps. A late start counts as a gap |
+| `cadence(ts)` | Inter-arrival p05/p50/p95 in ms (intervals ≤ 5 s) |
+| `book_checks(bid_px, bid_qty, ask_px, ask_qty, tick)` | Two-sided / one-sided / crossed / locked / non-monotone %, off-tick and non-positive counts, spread percentiles in ticks |
+| `tape_checks(recv_wall, recv_mono, volume, ltp, last_trade_epoch, tick)` | Rewinds, out-of-order, exchange lag (auto-detects the IST-wall-clock epoch, offset 19,800 s), wall-vs-monotonic skew events |
+| `touch_agreement(...)` | How often the quote feed's level 1 equals the depth feed's (depth row ≤ 1 s older) |
+| `presence(subscribed, present)` | Subscribed ids with no rows — the check that would have caught §9.4 on day one |
+| `include_day(depth_cov, feed_cov, ...)` | The frozen inclusion rule |
+
+**`scripts/qa_report.py`** walks every day (10 worker processes by default, ~2 min/day, ~6–7 GB
+peak) and writes `reports/qa/<date>.json` (gitignored) plus `reports/data_quality.md`.
+`reports/data_integrity.md` is the hand-written verdict on top of it.
+
+**Findings that shape everything downstream** (detail in `reports/data_integrity.md`):
+
+* **Stale-packet replays** — the quote feed occasionally re-sends a packet whose cumulative volume
+  and `last_trade_epoch` are older than one already received. Fixed in `book/tape.py`:
+  `volume_increments()` differences the counter's **running maximum**, so a replay and the climb
+  back from it add nothing. Phantom share was ≤0.01% on nine days and 5.8% on 2026-09-04.
+* **Depth feed lag** — measured by shifting one feed's clock against the other and maximising the
+  exact level-1 match rate: the peak is at a depth delay of 200–250 ms on every day, hour and
+  instrument (futures match 85–93% at the peak; fast option books 40–70%). Constant and
+  load-independent, so a vendor property. Constant `book.merge.DEPTH_LAG_NS = 225 ms`.
+* **`last_trade_epoch` is IST wall-clock seconds, not UTC** (raw offset −19,800 s). Not consumed
+  anywhere except QA. Corrected exchange-to-receipt lag: 0.8–1.0 s median; because the field is
+  truncated to the second, the true print delay is ≈0.3–0.5 s — the number behind §22.
+* **Benign:** the 33 ms unchanged-packet storm on Sep 4 (09:30–11:30); clock-skew events exactly
+  at capture restarts (monotonic clocks are not comparable across processes); duplicate depth
+  rows (two pushes in one socket read; the reader keeps the later); a stable futures basis
+  (parity forward 8–25 points below the future's mid).
+
+### 21.2 The portfolio simulator — `src/bnfmm/sim/portfolio.py`
+
+**Inputs.** A list of `Leg`s, each with its own clock: `book` (a `BookSeries`), `tape`,
+`fair_value` and `delta`/`vega` arrays on the book's clock, contract facts (tick, lot 30, freeze
+601), and optionally `stale` (per-interval socket staleness, used by the quote-feed mode).
+
+**The event loop.** Every (leg, snapshot k ≥ 1) is one event; events are processed in global
+receive-time order. At each event:
+
+1. **Settle** the interval (t[k−1], t[k]] for that leg: tape prints in the interval go to the
+   leg's `DepletionSimulator`; fills update the leg's `Position` (average-cost accounting, from
+   `sim/backtest.py`), the portfolio delta and vega, and are recorded with the **prevailing**
+   marks `micro[k−1]` and `fair_value[k−1]` (the Huang-Stoll convention, `DECISIONS.md` #17).
+2. **Refresh** the leg's delta/vega contribution to the portfolio totals.
+3. **Re-quote.** Stand-down checks in order: `stale_book` (gap > 1 s, or the `stale` array),
+   `no_usable_book`, `no_fair_value`, `premium_below_floor` (₹5), `spread_below_cost_floor`
+   (book spread < `min_spread_bp` of fair value). If nothing that sets the quote changed (same
+   touch, same fair value, no fill anywhere since this leg last quoted), the existing orders are
+   left untouched. Otherwise, for each side:
+
+   * target: `bid = V − r_b·V − buffer − shift`, `ask = V + r_s·V + buffer − shift`, rounded away
+     from the market, where `r_b`, `r_s` are statutory cost per rupee of premium
+     (`cost_split="symmetric"`: both = half the 23.71 bp round trip; `"own"`: 4.50 / 19.20 bp);
+   * capped at one tick inside the touch (`improve`), or the touch (`join_only`);
+   * per-side stand-downs: `would_cross`, `imbalance` (if enabled), `edge_below_cost` (would sit
+     more than `max_behind_ticks` behind the touch), `leg_cap`, `delta_limit`, `vega_limit`
+     (only the side that would increase the exposure is pulled), `close_only`;
+   * **if the resting order already has this price, it is kept** — that is the queue-priority
+     change; otherwise it is cancelled (instantly, or after the latency, §22.1) and a new order is
+     placed with its queue position read from the current book.
+
+   `shift = delta_skew·(portfolio delta in lots)·leg_delta + leg_skew_ticks·(leg lots)·tick
+   + vega_skew·(portfolio vega in ATM-lots)·(leg vega / reference vega)`.
+
+**`summarise(result, forward_t, forward)`** returns: fills, units, orders, swept %; `costs` per
+profile with brokerage charged **per order** (fills carry their order id); `gross_micro`,
+`gross_fair_value`, `gross_liquidation` (longs closed at the last bid, shorts at the last ask)
+and `net_member_liquidated` (also pays the closing trade's statutory cost); `spread_capture` and
+`inventory_pnl` (exact split; their sum equals `gross_micro`, tested); Huang-Stoll effective and
+realised half-spread at 1/5/30/300 s; per-leg tables; and the **directional diagnostics**: β (₹
+per forward point, and in lots) and R² of per-minute PnL increments regressed on parity-forward
+changes, mean |delta|, mean vega.
+
+**Fair value and greeks are built by the driver**, not the simulator (`scripts/mm.py`):
+
+* `fair_value(mode="blend")`: precision-weighted average of the option's own L1 microprice
+  (weight 1/(own half-spread)²) and its parity value `m_other ± D·(F − K)` (weight 1/(other
+  half-spread)²), all carried forward causally. A wide ITM book defers to its tight OTM partner.
+* `leg_greeks`: Black-76 implied vol from the fair value every 25 snapshots, then delta and vega;
+  where no implied vol exists (value at intrinsic), delta = ±D if ITM, 0 if OTM, vega = 0.
+* F is the cross-strike parity forward (`fairvalue/parity.implied_forward`) on the aligned grid.
+
+### 21.3 The guardrails — frozen protocol, holdout loader, configuration log
+
+`src/bnfmm/analysis/holdout.py` (13 tests):
+
+* `load_protocol(path)` parses a frozen YAML (develop, holdout, excluded, expiry map, inclusion
+  rule, baseline) and records its **sha256**. It rejects overlapping sets and a holdout that is
+  not strictly later than every develop day.
+* `require_access(protocol, days, unlock_reason=...)` raises `HoldoutLocked` for any holdout day
+  unless a non-empty reason is given, in which case it appends a row (UTC time, days, reason,
+  protocol hash, command line) to `reports/holdout_log.md`. Excluded or unknown days raise
+  `ProtocolError`.
+* `log_config(protocol, record)` appends a JSON line (time, protocol hash, script, config, days)
+  to `reports/config_log.jsonl`; `count_configs()` counts **distinct config dicts across all
+  scripts**, which is why the RV scripts print a running total that includes the classic runs.
+
+Frozen files and their hashes: `protocol.yaml` `0e865025…`, `mm_v1.yaml` `4f144314…`,
+`protocol_rv.yaml` (rv) `9b070f78…`. `protocol_rv_patient.yaml` (rv) is read directly by its
+script. `scripts/mm.py` and `scripts/backtest.py` default to the classic protocol; the RV scripts
+load `protocol_rv.yaml`.
+
+### 21.4 `scripts/mm.py` — the driver
+
+```
+--date D (repeatable; default = develop days)   --unlock-holdout REASON
+--band N (strikes either side of ATM, default 11)  --leg both|ce|pe   --levels 10
+--fv own|parity|blend (blend)   --book depth|merged (depth)   --source depth|quotes (depth)
+--series front|next (front)     --min-dte N (default from config/instruments.yaml = 3)
+--lots 1  --buffer TICKS  --cost-split own|symmetric  --join-only  --max-behind TICKS
+--leg-cap LOTS (5)  --delta-limit LOTS (5)  --delta-skew (0.5)  --leg-skew (0.5)
+--vega-skew (0)  --vega-limit ATM-LOTS (inf)  --min-premium (5)  --min-spread-bp (0)
+--optimistic-queue  --latency-ms MS (0)  --imbalance X (1 = off)  --close-only SECONDS
+--grid '{"arg_name":[v1,v2]}'  (cartesian product on the same loaded day; each logged)
+--tag NAME  --per-leg  --dump-fills
+```
+
+Defaults are module defaults, **not** mm_v1. The frozen mm_v1 is:
+`--band 11 --buffer 3 --cost-split symmetric --vega-limit 3 --min-spread-bp 37.8` (all else default).
+
+Per day it loads all front-series depth books in the band (L1 for parity, 10 levels for quoted
+legs), builds the forward, fair values and greeks, runs the simulator once per grid variant, and
+prints: fills/units/orders; gross under three marks; costs per profile; net member, net Dhan, net
+liquidated; capture vs inventory; per-unit capture and cost; Huang-Stoll; β, R², delta and vega;
+stand-down counts; busiest legs. Output files (gitignored): `reports/mm/<tag>[-v<i>].json`
+(config, params, per-day summaries) and, with `--dump-fills`,
+`reports/mm/fills-<tag>-v<i>-<date>.npz` (per fill: t, leg, side, price, qty, mark, later300,
+member cost, strike, is_call, delta, spread; plus `fwd_atm`).
+
+**Cost of a run:** depth source, band 11: ~80–100 s to load a day, 10–40 s to simulate; peak memory was not measured separately but
+stays within 15 GB when run alone. Quote source: ~270–380 s to load a day, ~7 GB used. A grid of 6 on two days ≈ 25–30 min.
+
+### 21.5 Reproducing every number in §0.4
+
+```bash
+.venv/bin/python scripts/qa_report.py
+```
+
+```bash
+.venv/bin/python scripts/mm.py --band 11 --buffer 3 --cost-split symmetric --vega-limit 3 --min-spread-bp 37.8
+```
+
+```bash
+.venv/bin/python scripts/mm.py --band 11 --buffer 3 --cost-split symmetric --vega-limit 3 --min-spread-bp 37.8 --grid '{"latency_ms":[0,500,1000]}'
+```
+
+```bash
+.venv/bin/python scripts/mm.py --band 11 --buffer 3 --cost-split symmetric --vega-limit 3 --min-spread-bp 37.8 --book merged
+```
+
+Holdout versions add `--date 2026-08-31 … --date 2026-09-04 --unlock-holdout "REASON"`, which
+**appends a holdout read to the log** — do it only when you mean it. On `rv-market-maker`:
+
+```bash
+.venv/bin/python scripts/rv_persistence.py
+```
+
+```bash
+.venv/bin/python scripts/rv_patient.py
+```
+
+---
+
+## 22. Robustness of the classic result — latency, book source, longer-dated series
+
+### 22.1 The latency model
+
+`DepletionSimulator(activation_ns=L)` (and `PortfolioParams.activation_ns`, `--latency-ms`):
+
+* a print counts toward an order only if it was **received** at least L after the order was
+  placed — so an order cannot trade against prints that executed before it existed;
+* **cancels take the same latency** (`cancel_at`): a repriced or withdrawn order stays live, and
+  can fill, until its cancel arrives; then it is purged. Fills carry their own order id, so a fill
+  on an order whose cancel is in flight is still charged to the right order.
+
+The first version made cancels instant while new orders waited, which leaves a repricing quoter
+with *no* order for L after every reprice — biased against the strategy. Its results (develop:
++₹8,585 at 500 ms, −₹2,852 at 1000 ms, with only 24k / 8k units filled) were discarded and are
+recorded only here and in `DECISIONS.md` #25. Latency 0 reproduces the pre-latency results
+exactly (checked: +₹127,594).
+
+**Which latency is realistic.** Prints reach the capture 0.8–1.0 s (median) after their
+exchange timestamp, which is truncated to the second, so ≈0.3–0.5 s after execution. Adding an
+order's own trip to the exchange gives ≈0.4–0.8 s for a non-co-located participant.
+
+### 22.2 Results, frozen mm_v1
+
+| | 0 ms | 500 ms | 1000 ms |
+|---|---|---|---|
+| Develop (Aug 27+28), member net | +127,594 | +13,323 | −33,823 |
+| Develop, liquidated | +105,441 | −6,236 | −53,206 |
+| Develop, units filled | 241,650 | 139,800 | 121,140 |
+| **Holdout (5 days), member net** | +199,537 | **−40,500** | −96,808 |
+| Holdout, liquidated | +155,159 | −84,754 | −136,953 |
+| Holdout, days positive | 5/5 | 1/5 (Sep 4) | 1/5 (Sep 4) |
+| Holdout, R² range | 0.002–0.18 | 0.001–0.16 | 0.001–0.07 |
+
+Effective half-spread per unit falls with latency (develop: ~1.8 → ~1.5 → ~1.0): orders priced on
+information that is stale by the time they are live are filled at worse prices.
+
+### 22.3 Book source, and why the longer-dated series were not run
+
+* **Merged book** (`--book merged`, `book/merge.py`): the depth book, overwritten by a quote-feed
+  state whenever that state is fresher (state time = receive time for quotes, receive time −
+  225 ms for depth; a staler row never overwrites a fresher one). Strictly more information.
+  Frozen mm_v1, develop, 0 ms: **+₹69,666** (Aug 27 +73,488; Aug 28 −3,822). Aug 28 shows a
+  "max |delta| 26.7 lots" against a 5-lot limit: a noisy quote-feed row moved one leg's implied
+  delta at a recomputation, not a real position. Worth hardening if this path is reused.
+* **Quote-feed-only books** (`--source quotes`): 5-level books from the Full packets, socket-level
+  staleness (union of packet times from the front band ±11 and both futures; gaps > 1 s are
+  outages), parity on 23 strikes on a regular 200 ms grid. Validation on the develop days
+  failed twice: evaluated per packet, Aug 27 alone was −₹59,172 (a quiet leg's quotes sat on a
+  stale fair value while the forward moved); resampled onto a 200 ms decision clock (the current
+  code), −₹39,520 over both days against the depth result of +₹127,594.
+* **Consequence.** The Oct series (53–61 DTE) and the Sep series on Aug 24/25 (35–36 DTE) exist
+  only on the quote feed. Because the adapter cannot reproduce a known result, mm_v1 was **not**
+  run on them. Roughly half the zero-latency edge depends on how the depth feed represents the
+  book — itself a finding.
+
+### 22.4 The second holdout read
+
+The latency sensitivity was run on the holdout (500 and 1000 ms), logged with the reason
+"latency sensitivity of frozen mm_v1 (strategy unchanged; simulator order-latency assumption
+varied)". No strategy parameter was chosen from it; it is a disclosure against the 0 ms headline.
+
+---
+
+## 23. The `rv-market-maker` fork — two latency-tolerant strategies, both NO-GO
+
+### 23.1 Why the fork exists
+
+The user's framing (2026-10-02): the classic market maker is exhausted and the problem is latency;
+explore "a fresh option market making strategy where edge is not speed", as a fork so the classic
+study keeps its own place. Two candidates were proposed: **#1** relative-value quoting off a
+fitted volatility smile; **#2** patient liquidity provision far from fair value. Each needed a
+pre-registered go/no-go before anything was built.
+
+### 23.2 Protocol and the smile module
+
+`config/frozen/protocol_rv.yaml` (committed and pushed in `656e092` before any RV statistic):
+develop Aug 27/28; validation Aug 31 – Sep 4, explicitly described as "unseen by this strategy
+family", not "unseen by the researcher"; excluded Aug 24/25/26; strategy #1 criteria.
+
+`src/bnfmm/fairvalue/smile.py` — `fit_smile_loo(x, iv, weight, degree=2)`: per instant, a
+weighted polynomial in log-moneyness x = ln(K/F), with **leave-one-out** predictions from the hat
+matrix (`y_loo = y − r/(1 − h)`), so a strike is valued by the smile its neighbours imply. Rows
+with fewer than degree+3 strikes are NaN. 4 tests, including a brute-force LOO cross-check.
+
+### 23.3 Strategy #1 — smile relative value
+
+`scripts/rv_persistence.py`. Each second: parity F; IV of each strike's OTM option from its mid;
+quadratic smile weighted by (vega / half-spread)²; residual r = mid − leave-one-out smile value,
+for both calls and puts at all 23 strikes.
+
+| Measure | Value |
+|---|---|
+| Residual autocorrelation 1 / 5 / 30 / 300 s | 0.718 / **0.587** / 0.467 / 0.297 |
+| Median \|residual\| vs median half-spread | 11.6 bp vs 21.6 bp |
+| Correction toward smile, \|r\| > half-spread, delay 0: 5 / 30 / 300 s | +1.65 / +2.63 / +5.50 bp |
+| Same after a 1 s entry delay | +0.68 / +1.62 / **+4.46 bp** (se 0.29) |
+| Bars | autocorrelation ≥ 0.5 → PASS; delayed correction > 11.85 bp → **FAIL** |
+
+**NO-GO.** The signal beats latency (one second costs ~1 bp of it) but not cost. Report:
+`reports/rv_strategy1_smile_go_no_go.md`.
+
+### 23.4 Strategy #2 — patient liquidity provision
+
+`config/frozen/protocol_rv_patient.yaml` (pushed in `c062633` before measuring);
+`scripts/rv_patient.py`. Resting orders at fair·(1 ∓ δ) with fair the book mid **1 s before**
+each print; a print at or through the price fills at the order's price; after a fill that side is
+empty for 1 s. Markout vs the 23.71 bp round trip; minute-clustered standard errors; t ≥ 3 and
+≥ 50 fills/day required.
+
+| δ | τ | Fills/day | Mean (bp) | se | t vs bar |
+|---|---|---|---|---|---|
+| 50 | 30 s | 6,508.5 | −3.75 | 4.59 | −5.99 |
+| 50 | 300 s | 6,431.5 | +17.55 | 14.25 | −0.43 |
+| 100 | 30 s | 687.5 | +16.78 | 10.04 | −0.69 |
+| 100 | 300 s | 684.5 | +21.63 | 29.91 | −0.07 |
+| 200 | 30 s | 28.5 | −5.75 | 48.36 | −0.61 |
+| 200 | 300 s | 28.5 | −4.34 | 49.63 | −0.57 |
+
+**NO-GO.** Close in, the stale order is picked off; far out, reversion is just below cost and
+within noise. Caveat: resting prices were not tick-rounded, so the "strict trade-through"
+sensitivity coincides with the main rule. Report: `reports/rv_strategy2_patient_go_no_go.md`.
+
+### 23.5 What is still clean, and the combined conclusion
+
+Neither strategy was built, so **no RV analysis has touched the validation days**. The combined
+result (`DECISIONS.md` #24): edges large enough to pay ~24 bp of round-trip statutory cost decay
+faster than ~0.5 s; edges that survive the latency are smaller than the cost.
+
+---
+
+## 24. Everything tried on the way, with numbers (develop days unless stated)
+
+All member-profile net PnL in rupees, depth book, 0 ms latency, from `reports/config_log.jsonl`
+lines 1–27. "Band 3" = ATM ±3 strikes on 2026-08-28; "band 11" = the full depth band.
+
+| Run | Result | What it taught |
+|---|---|---|
+| Band 3, base (own cost split, buffer 0, improve) | −92,200; capture 409,655 vs inventory −172,800; realised 0.62/unit vs cost 0.84 | Spread capture now positive (Phase 1's was not); loss is post-fill adverse movement |
+| Band 3, vega skew 0.5/2.0 × limit 3/10 | −175,732 to −312,346 | Skew makes the reducing side more aggressive → more adverse fills |
+| Band 3, buffer {0,3,8} × improve/join | −92,200 / −63,553 / −44,587 / −34,088 / −17,597 / −15,650 | Wider = trades less, approaches zero from below; join is worse per unit |
+| Band 11, own split, buffer 3 | −58,991; mean vega +₹226,515/vol pt; β −4.3 lots, R² 0.28 | Long-vega drift masquerades as direction; ITM wide books pay |
+| Band 11, merged book (own split) | −99,660 | Fresher book did not reduce adverse selection |
+| Band 11, symmetric split, vega limit ∞ / 10 / 3 | −33,052 / −14,974 / −17,071 (R² 0.000 at limit 3) | Symmetric split + vega cap = market-neutral |
+| 4 days, symmetric + vega 3, no spread gate | Aug 24 −55,359; **Aug 25 −515,486**; Aug 27 +22,528; Aug 28 −17,071 | Expiry day realised spread ≈ 0 → excluded by the pre-registered DTE rule |
+| Imbalance pull 0.4 | −19,373 (vs −17,071) | Failed falsification |
+| **Spread gate 37.8 bp** (the mm_v1 config) | Aug 27 +80,643; Aug 28 +46,951 | Derived gate turns it positive |
+| Gate 30 / 45 bp × pessimistic / optimistic queue | +119,201 / +123,635; +94,203 / +103,345 | Not a knife edge; queue convention < 10% |
+
+**Diagnostics that motivated the gate** (fills from the band-11 symmetric run, Aug 27+28): net
+realised-at-300 s PnL per unit by book spread at fill: < 20 bp −0.870, 20–30 bp −0.122,
+30–40 bp −0.101, 40–60 bp **+0.929**, 60–100 bp +1.254. By moneyness: deep ITM (+600–1200 pts)
++1.824, near-ATM OTM (−300 to −100) −0.492. Inputs to the derivation: round-trip statutory cost
+23.71 bp (buy 4.50, sell 19.20), adverse selection at 300 s 7.05 bp.
+
+**Other measurements:** fair-value estimators scored against future prints are
+indistinguishable (mid, L1 microprice, their average: RMSE within 0.5 tick), and against future
+microprice the mid is as good as the microprice — the L1 microprice's lean toward the thin side
+reverts within a second. 5-level imbalance does predict the mid with the textbook sign
+(≈ −1.2 ticks over 5 s at −0.4; +1.3 at +0.2), about 1/6 of the per-fill adverse selection.
+
+**Bugs found while building Phase 2** (`DECISIONS.md` #25): order ids taken from Python `id()`
+were reused after garbage collection, merging sell fills into buy orders and dropping their STT
+(member cost understated ~16% on the first runs); fixed before any reported number.
+
+---
+
+## 25. Operational notes for this machine and repo
+
+* **Run everything with `.venv/bin/python`** from the repo root. `pytest` config is in
+  `pyproject.toml` (`pythonpath = src`); use `-o addopts=""` to see the summary line.
+* **Memory (15 GB) is the binding resource.** Two runs were OOM-killed (exit 137): the per-strike
+  screen while 10 QA workers were running, and the quote-feed parity solve on the union of
+  unsynchronised packet clocks (millions of grid points × 101 strikes). Run heavy jobs one at a
+  time; solve parity on a regular grid when sources are unsynchronised.
+* **Long runs:** launch in the background with `python -u` (otherwise stdout is block-buffered and
+  a log stays empty until the end) and an explicit `timeout`; write to a log and `grep` it.
+* **Do not `pkill -f` / `pgrep -f` with a pattern that also appears in your own shell command** —
+  it matches the shell itself (this killed a session twice). Match on something unique, or use PIDs.
+* **Git:** HTTPS remote with credential helper `store`; pushes need a GitHub personal access token
+  entered by the user at the prompt. Never paste a token into a chat or a file.
+* **Gitignored outputs** (`reports/mm/`, `reports/qa/`, `reports/rv/`, `data/`) exist only on the
+  original machine. The fill dumps for the mm_v1 holdout are
+  `reports/mm/fills-holdout-mm_v1-v0-<date>.npz`.
+* **The instrument master** `data/reference/api-scrip-master-detailed.csv` is deliberately stale
+  (2026-08-23); `scripts/capture.py` needs `--allow-stale-master` with it. Capture is closed anyway.
+
+---
+
+## 26. Glossary
+
+| Term | Meaning here |
+|---|---|
+| Member profile | Exchange member: statutory charges only, ₹0 brokerage. The favourable cost bound |
+| Dhan profile | Retail: flat ₹20 per executed order (+18% GST) on top of statutory charges |
+| Round trip | A buy and a sell of the same option. Statutory cost ≈ 23.71 bp of premium (STT 0.15% on the sell side dominates) |
+| DTE | Calendar days to expiry. BANKNIFTY monthly options expire on Tuesdays at 15:30 IST |
+| Lot | 30 units. Freeze quantity 601 units = 20 lots |
+| Tick | ₹0.05 for options, ₹0.20 for futures |
+| Depth feed / quote feed | Dhan's 20-level depth WebSocket (~200 ms snapshots, 48 ids) / general "Full" packet feed (5 levels + volume, event-driven, 326 ids) |
+| Tape | Trades inferred by differencing the quote feed's cumulative volume; aggressor by Lee-Ready |
+| Parity forward | F implied by C − P = D(F − K) across strikes, precision-weighted (`fairvalue/parity.py`) |
+| Spread capture / inventory PnL | Exact split of gross PnL: Σ s(M_fill − P) and Σ s(M_close − M_fill) |
+| Liquidated | Gross with open positions closed at the touch and that closing trade's cost paid |
+| Effective / realised half-spread | Huang-Stoll: edge vs the prevailing mark at the fill / vs the mark τ later; the difference is adverse selection |
+| β, R² | Per-minute PnL increments regressed on parity-forward changes; R² ≈ 0 means market-neutral |
+| ATM-lot (vega) | One lot of the most vega-rich (at-the-money) option; the unit of the vega limit |
+| Activation latency | Delay before a new order (or a cancel) takes effect in the fill model (§22.1) |
+| Develop / holdout / validation | Days used to build a strategy / read once to evaluate it (classic) / unseen by the RV family |
+| mm_v1 | The frozen classic strategy, `config/frozen/mm_v1.yaml` |
+
+
+---
+
+## Appendix A — superseded status snapshots, kept for the record
+
+> These were §0 at earlier points. They are wrong about the current state; read §0.
+
+### A.1 Status as of 2026-09-30 (before the latency result and the fork)
+
+| | |
+|---|---|
+| **Phase** | Capture **closed** (entitlement lapsed 2026-09-22; user: no more collection). Phase 2 market maker built, frozen, and evaluated out of sample |
+| **Headline result** | **`mm_v1` is genuine market making (R² on the market ≤0.18) and makes +₹199,537 on 5/5 unseen sessions at zero latency — but −₹40,500 at 500 ms order latency and −₹96,808 at 1000 ms.** The edge is smaller than the cost of not being fast. §20.6, `DECISIONS.md` #23 |
+| **Data** | **10 sessions**, 2026-08-24 → 2026-09-04, 64 GB. Integrity verdict: fit for simulation, one tape bug fixed. `reports/data_integrity.md` |
+| **Tests** | **580 collected: 579 passing, 1 failing** — the known stale-master test, §13.9 (now safe to fix, see below) |
+| **Configurations tried** | 26 on develop days (`reports/config_log.jsonl`); holdout read once (`reports/holdout_log.md`) |
+| **Broker** | Dhan (DhanHQ v2). Entitlement **lapsed**. No order endpoint exists in the repo |
+| **Instrument** | BANKNIFTY monthly options, ±11 strikes around ATM, both legs, front series |
+| **Open gap** | No index spot was ever captured (§9.4) — the forward is parity-only |
+| **Committed to git** | **Nothing.** Deferred by user instruction; the exposure is now larger (§13.1) |
+
+#### What changed on 2026-09-30
+
+1. **Capture is over.** Nothing was recorded after 2026-09-04 (one more session than §9.5 lists).
+   The user has decided no more data will be collected.
+2. **The 0.15% options STT rate is verified** (Union Budget 2026, effective 2026-04-01) — §13.10
+   closed; `config/costs.yaml` records the sources.
+3. **§13.11 closed.** `scripts/snapshot_contracts.py` now falls back to raw-log preambles and
+   resolves ids within `(exchange, segment)`; all 19 runs across 10 days have correct sidecars.
+   The full 2026-08-23 master is archived in `data/reference/archive/`, so the master can now be
+   refreshed and §13.9's failing test fixed (a 36 MB public download — ask first).
+4. **The holdout split is frozen and enforced in code** (`config/frozen/protocol.yaml`,
+   `analysis/holdout.py`) — §18.5's machinery now exists.
+5. **Data integrity checked** (`data/qa.py`, `scripts/qa_report.py`, `reports/data_quality.md`,
+   `reports/data_integrity.md`): no corrupt books; a tape bug that booked replayed packets as
+   trades fixed (DECISIONS #20); the depth feed runs a stable 225 ms behind the quote feed.
+6. **The market maker was rebuilt as one portfolio** (`sim/portfolio.py`, `scripts/mm.py`,
+   `fairvalue/black76.py`) and is profitable out of sample — §20, DECISIONS #21–22.
+
+#### Next actions, if the project continues
+
+1. **Write-up (Phase 6).** `README.md` still predates both §17 and §20 and is the public artifact.
+   The story: Phase 1's negative result, the diagnosis, the four structural changes, the frozen
+   holdout. Keep the Phase 1 bugs (§17.8) — they remain the strongest methodological content.
+2. **Commit**, once the user sets `user.name`/`user.email`; rename `master` → `main` at the first
+   commit (§13.1). Everything is untracked.
+3. **Refresh the master and fix §13.9** (download needs the user's go-ahead).
+4. **Close the remaining analysis-layer test gaps**: `book/reconstruct.py`, `fairvalue/parity.py`,
+   `strategy/quoter.py` (Phase 1 path), `data/channels.py`, `data/chain.py`. The new modules
+   (`qa`, `tape` differencing, `merge`, `black76`, `portfolio`, `holdout`) are tested.
+5. **Do not re-tune `mm_v1` on the holdout days.** They are spent. Any `mm_v2` has no clean
+   out-of-sample data in this corpus; say so if one is built.
+
+#### Superseded status (2026-09-03), kept for the record
+
+#### What changed since the last revision of this document
+
+The previous revision was written on the night of 2026-08-23/24, before any real market data
+existed. Four things have happened since, in order:
+
+1. **Capture ran, and keeps running.** Nine sessions are on disk (2026-08-24 through
+   2026-09-03, with 2026-09-03 still in progress as this is written). The depth decoder —
+   the one risk that could not be retired offline — decoded real bytes correctly. §9.3 is
+   now a retired risk rather than an open one.
+2. **Phases 2–4 were built out of order and fast**, because the user asked for a working
+   market maker on the first two days rather than for the scheduled Sep 1–21 sequence.
+   `book/`, `fairvalue/`, `sim/fills/` and `strategy/` are no longer empty. §6.
+3. **The market maker was run on 2026-08-24 (1 DTE) and 2026-08-25 (0 DTE, expiry).** It
+   loses money in every configuration tested. The one profitable cell was attacked and
+   turned out to be a directional bet, not market making. Full account in §17 and
+   `reports/phase1_market_maker_results.md`.
+4. **Two simulator bugs were found and fixed, each of which manufactured profit.** Both
+   were caught by disbelieving a good number rather than by a failing test. `DECISIONS.md`
+   #17. This is the most transferable methodological content in the repo.
+
+#### The immediate next actions, in priority order
+
+**§18 is the plan of record for getting the strategy to breakeven; §19 is the plan for the data
+gaps. Neither has been implemented.** Both were written 2026-09-04 and supersede the looser
+"what would have to change" list in §17.6.
+
+1. **Keep capturing** — and **build the feed watchdog** (§19.6). §15's check is one glance at
+   09:20; on Aug 26 the feed died at 10:52 and nobody noticed for four and a half hours. An alarm
+   on >30 s of no depth frames turns a lost session into a lost minute. **A session happens once**,
+   and entitlement lapses 2026-09-22, so ~13 remain. This outranks every analysis item below.
+2. **Verify the 0.15% options STT rate** (§13.10, §18.1). Sell-side STT at that rate is
+   **₹0.3054/unit against a captured half-spread of ₹0.3065** — it *is* the result. At 0.10% the
+   existing run clears on the member profile with **no strategy change at all.** Twenty minutes,
+   highest leverage in the project.
+3. **Snapshot the five manifest-less captures** (§13.11). **The only item with a hard external
+   deadline: 2026-09-29**, when the vendor prunes the September series and those captures become
+   20-level books of unknown strikes. Recoverable from the raw-log preambles today, not afterwards.
+4. **Wire the cost floor into the quoter's gate** (§18.4 step 1). `breakeven_ticks()` exists and
+   the gate is a hardcoded `1.0` placeholder — **the strategy computes its cost floor for the
+   report and ignores it when deciding whether to quote** (§18.2).
+5. **Freeze the holdout before touching any knob** (§18.5). Non-optional: §18's levers are five
+   knobs on two days, and a number swept into existence is worth less than the negative result it
+   replaced.
+6. **Close the `PnlGrid` gap** (§5.1). A broken guarantee, not a to-do.
+7. **Write tests for the six untested new modules** (§13.2). They carry the headline result.
+8. **Analyse the seven unexamined sessions** (§17.7) — the largest available gain, since the data
+   is already on disk. Do the §14 Phase 1c quality pass first, with uptime as a *written*
+   inclusion criterion (§19.6).
+
+---
+
 
