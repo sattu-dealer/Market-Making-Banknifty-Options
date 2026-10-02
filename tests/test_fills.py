@@ -332,3 +332,41 @@ def test_no_lookahead_state_is_carried_between_orders() -> None:
     by_price = {f.price: f.quantity for f in fills}
     assert by_price[100.0] == 30  # 120 - 50 = 70, capped at 30
     assert by_price[99.5] == 10  # 120 - 110
+
+
+def test_activation_latency_ignores_prints_that_predate_the_order():
+    import numpy as np
+    from bnfmm.book.tape import SELL
+    from bnfmm.sim.fills.depletion import DepletionSimulator
+    ms = 1_000_000
+    bp = np.array([100.0]); bq = np.array([0]); ap = np.array([101.0]); aq = np.array([30])
+    for act, expect in ((0, 30), (500 * ms, 0)):
+        sim = DepletionSimulator(activation_ns=act)
+        sim.place(security_id=1, side="bid", price=100.05, quantity=30, now_ns=0,
+                  bid_px=bp, bid_qty=bq, ask_px=ap, ask_qty=aq)
+        fills = sim.step(now_ns=200 * ms, prev_ns=0, tape_price=np.array([100.0]),
+                         tape_qty=np.array([30]), tape_aggressor=np.array([SELL]),
+                         best_bid=100.0, best_ask=101.0, tape_t=np.array([150 * ms]))
+        assert sum(f.quantity for f in fills) == expect
+
+
+def test_a_cancel_in_flight_leaves_the_old_order_fillable_until_it_arrives():
+    import numpy as np
+    from bnfmm.book.tape import SELL
+    from bnfmm.sim.fills.depletion import DepletionSimulator
+    ms = 1_000_000
+    bp = np.array([100.0]); bq = np.array([0]); ap = np.array([101.0]); aq = np.array([30])
+    sim = DepletionSimulator(activation_ns=500 * ms)
+    old = sim.place(security_id=1, side="bid", price=100.05, quantity=30, now_ns=0,
+                    bid_px=bp, bid_qty=bq, ask_px=ap, ask_qty=aq)
+    sim.cancel_at(old, 1000 * ms + 500 * ms)  # cancel sent at t=1.0 s arrives at 1.5 s
+    kw = dict(tape_price=np.array([100.0]), tape_qty=np.array([30]),
+              tape_aggressor=np.array([SELL]), best_bid=100.0, best_ask=101.0)
+    f1 = sim.step(now_ns=1400 * ms, prev_ns=1200 * ms, tape_t=np.array([1300 * ms]), **kw)
+    assert [f.order_id for f in f1] == [old.order_id]  # still live at 1.3 s
+    sim2 = DepletionSimulator(activation_ns=500 * ms)
+    o2 = sim2.place(security_id=1, side="bid", price=100.05, quantity=30, now_ns=0,
+                    bid_px=bp, bid_qty=bq, ask_px=ap, ask_qty=aq)
+    sim2.cancel_at(o2, 1500 * ms)
+    assert sim2.step(now_ns=1800 * ms, prev_ns=1600 * ms, tape_t=np.array([1700 * ms]), **kw) == []
+    assert sim2.resting == []

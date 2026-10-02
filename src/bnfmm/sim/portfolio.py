@@ -122,6 +122,9 @@ class PortfolioParams:
     #: > +x pulls the ask. 1.0 or more disables it. BRIEFING §18.4 step 2.
     imbalance_pull: float = 1.0
     imbalance_levels: int = 5
+    #: Order activation latency: a print counts toward an order only if received
+    #: at least this long after the order was placed (see DepletionSimulator).
+    activation_ns: int = 0
     #: Stop opening new risk this many seconds before the close; only reduce.
     close_only_last_s: float = 0.0
 
@@ -142,6 +145,13 @@ class Leg:
     fair_value: np.ndarray  # quote anchor
     delta: np.ndarray  # dV/dF per unit, for risk only
     vega: np.ndarray | None = None  # dV per vol point per unit, for risk only
+    #: Optional externally-computed staleness per snapshot interval (t[k-1], t[k]].
+    #: The depth feed pushes every instrument every ~200 ms, so a long gap between
+    #: one leg's snapshots *is* an outage and the default rule uses it. The quote
+    #: feed is event-driven: a quiet option simply did not change, so staleness
+    #: must come from the socket as a whole. When given, this array replaces the
+    #: per-leg gap rule for both quoting and fills.
+    stale: np.ndarray | None = None
 
 
 @dataclass(slots=True)
@@ -215,8 +225,11 @@ def run_portfolio(
     L = len(legs)
     res = PortfolioResult(legs=legs, params=p, positions=[Position() for _ in legs])
 
-    sims = [DepletionSimulator(max_stale_ns=p.max_stale_ns,
-                               queue_at_price_ahead=p.queue_at_price_ahead) for _ in legs]
+    # A leg with its own staleness array settles fills without the per-leg gap
+    # rule; the array decides instead (checked before every step below).
+    sims = [DepletionSimulator(max_stale_ns=p.max_stale_ns if g.stale is None else 2**62,
+                               queue_at_price_ahead=p.queue_at_price_ahead,
+                               activation_ns=p.activation_ns) for g in legs]
     micro = [microprice(g.book.bid_px, g.book.bid_qty, g.book.ask_px, g.book.ask_qty)
              for g in legs]
     imb = [imbalance(g.book.bid_qty, g.book.ask_qty, levels=p.imbalance_levels) for g in legs]
@@ -255,8 +268,6 @@ def run_portfolio(
     vref = max((float(np.nanmedian(g.vega)) for g in legs
                 if g.vega is not None and np.isfinite(g.vega).any()), default=0.0)
     vref_lot = vref * (legs[0].lot_size if L else 1)
-    order_seq: dict[int, int] = {}  # id(live RestingOrder) -> unique order number
-    next_order = [0]
     last_micro = np.full(L, np.nan)
     port_delta = 0.0  # units of the underlying
     fill_counter = 0
@@ -270,10 +281,15 @@ def run_portfolio(
     def stand(reason: str) -> None:
         down[reason] = down.get(reason, 0) + 1
 
-    def pull(i: int, side: str) -> None:
+    def pull(i: int, side: str, now: int | None = None) -> None:
         o = resting[i][side]
         if o is not None:
-            sims[i].cancel(o)
+            if p.activation_ns and now is not None:
+                # The cancel travels with the same latency; the old order stays
+                # fillable until it arrives (DepletionSimulator.cancel_at).
+                sims[i].cancel_at(o, now + p.activation_ns)
+            else:
+                sims[i].cancel(o)
             resting[i][side] = None
 
     for e in range(len(ev_t)):
@@ -292,16 +308,20 @@ def run_portfolio(
             next_eq = t + equity_every_ns
 
         prev_t = int(bk.recv_wall_ns[k - 1])
-        gap = t - prev_t
+        is_stale = (t - prev_t) > p.max_stale_ns if g.stale is None else bool(g.stale[k])
 
         # -- 1. settle the interval (prev_t, t] against orders resting in it ------
         lo, hi = lo_hi[i][0][k], lo_hi[i][1][k]
-        if hi > lo and (resting[i]["bid"] is not None or resting[i]["ask"] is not None):
+        if hi > lo and is_stale and g.stale is not None:
+            sims[i].stats.intervals_stale += 1
+            sims[i].stats.stale_units_skipped += int(g.tape.quantity[lo:hi].sum())
+        elif hi > lo and (resting[i]["bid"] is not None or resting[i]["ask"] is not None):
             fills = sims[i].step(
                 now_ns=t, prev_ns=prev_t,
                 tape_price=g.tape.price[lo:hi], tape_qty=g.tape.quantity[lo:hi],
                 tape_aggressor=g.tape.aggressor[lo:hi],
                 best_bid=float(bk.best_bid[k]), best_ask=float(bk.best_ask[k]),
+                tape_t=g.tape.recv_wall_ns[lo:hi],
             )
             for f in fills:
                 pos = res.positions[i]
@@ -315,7 +335,7 @@ def run_portfolio(
                 cum_cost += cost
                 res.fills.append(FillRecord(
                     t=t, leg=i, side=f.side, price=f.price, qty=f.quantity,
-                    order_id=order_seq.get(id(o), -1), mark_micro=float(micro[i][k - 1]),
+                    order_id=(i << 32) | f.order_id, mark_micro=float(micro[i][k - 1]),
                     mark_fv=float(g.fair_value[k - 1]), delta=float(cur_delta[i]),
                     vega=float(cur_vega[i]),
                     swept=f.swept, queue_ahead=f.queue_ahead,
@@ -345,7 +365,7 @@ def run_portfolio(
         v = float(g.fair_value[k])
         units = res.positions[i].units
         reason = None
-        if gap > p.max_stale_ns:
+        if is_stale:
             reason = "stale_book"
         elif not (np.isfinite(bb) and np.isfinite(ba) and bb < ba):
             reason = "no_usable_book"
@@ -356,8 +376,8 @@ def run_portfolio(
         elif p.min_spread_bp > 0 and (ba - bb) / v * 1e4 < p.min_spread_bp:
             reason = "spread_below_cost_floor"
         if reason is not None:
-            pull(i, "bid")
-            pull(i, "ask")
+            pull(i, "bid", t)
+            pull(i, "ask", t)
             stand(reason)
             live_last[i] = False
             continue
@@ -436,7 +456,7 @@ def run_portfolio(
             elif closing and not reduces:
                 why = "close_only"
             if why is not None:
-                pull(i, side)
+                pull(i, side, t)
                 stand(why)
                 continue
 
@@ -444,15 +464,13 @@ def run_portfolio(
             if o is not None and abs(o.price - px) < 1e-9 and o.live:
                 quoted = True  # unchanged price: keep the order and its queue place
                 continue
-            pull(i, side)
+            pull(i, side, t)
             o = sims[i].place(
                 security_id=g.security_id, side=side, price=float(px), quantity=size,
                 now_ns=t, bid_px=bk.bid_px[k], bid_qty=bk.bid_qty[k],
                 ask_px=bk.ask_px[k], ask_qty=bk.ask_qty[k],
             )
             resting[i][side] = o
-            order_seq[id(o)] = next_order[0]
-            next_order[0] += 1
             quoted = True
         if quoted:
             res.quoted_events += 1

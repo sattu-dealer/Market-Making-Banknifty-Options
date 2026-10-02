@@ -797,3 +797,29 @@ The near-expiry sessions (2026-08-24/25) were excluded by `min_days_to_expiry: 3
 `config/instruments.yaml` on 2026-08-23 before any data existed — the realised spread there is
 zero. Full account and limitations: `reports/phase2_portfolio_market_maker.md`. The holdout is
 spent; any change is mm_v2 and has no clean out-of-sample data left in this corpus.
+
+## 23. The mm_v1 profit does not survive realistic order latency
+
+*2026-09-30.* Three robustness checks on the *frozen* strategy, none of which changes a strategy
+parameter:
+
+1. **Order latency.** `DepletionSimulator(activation_ns=...)` now lets a print count toward an
+   order only if received at least that long after the order was placed, and — symmetrically —
+   a cancel takes the same latency to arrive, so a repriced order stays fillable until then
+   (`cancel_at`). A first, one-sided version (cancels instant, new orders delayed) left the
+   quoter with no order in the gap and was discarded as biased. With the symmetric model:
+   develop +127,594 (0 ms) → +13,323 (500 ms) → −33,823 (1000 ms); **holdout +199,537 → −40,500
+   → −96,808**, market-neutral throughout. Trades reach us ≈0.3–0.5 s after they execute, so
+   ≈0.4–0.8 s is the realistic activation delay for anyone not co-located.
+2. **Book source.** Depth merged causally with the fresher quote feed: +69,666 on develop.
+   Quote feed alone, on a 200 ms decision clock: −39,520. (Evaluated per-packet instead of on a
+   decision clock it was −59,172 on Aug 27 alone: a quiet leg's quotes sat on a stale fair value
+   while the forward moved. Recorded because it is an easy mistake to repeat.)
+3. **Longer-dated series** (Oct; Sep on Aug 24/25) exist only on the quote feed. Since the
+   quote-feed adapter failed to reproduce the depth result, mm_v1 was **not** run on them.
+
+The holdout was read a second time for (1), logged with that reason. The conclusion that stands:
+the structural changes of #21 make the quoter capture spread and stay market-neutral, but on this
+data the edge is smaller than the cost of not being fast — a co-location bet, not a strategy a
+retail-latency participant could run. The zero-latency figures measure what the quoting logic
+captures; they are not what a real participant would have made.

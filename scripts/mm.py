@@ -37,8 +37,9 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO_ROOT / "src"))
 
 from bnfmm.analysis.holdout import load_protocol, log_config, require_access  # noqa: E402
-from bnfmm.book.merge import load_merged_book  # noqa: E402
-from bnfmm.book.reconstruct import align, load_book  # noqa: E402
+from bnfmm.book.merge import load_merged_book, load_quote_ladders  # noqa: E402
+from bnfmm.book.reconstruct import BookSeries, align, load_book  # noqa: E402
+from bnfmm.data import store  # noqa: E402
 from bnfmm.book.tape import load_tape  # noqa: E402
 from bnfmm.data.qa import fmt_ist, session_bounds_ns  # noqa: E402
 from bnfmm.fairvalue import black76  # noqa: E402
@@ -52,11 +53,11 @@ OUT = _REPO_ROOT / "reports" / "mm"
 PROTOCOL = load_protocol()
 
 
-def depth_options(day: date, expiry: date) -> dict[float, dict[str, dict]]:
-    """strike -> {'CE': contract, 'PE': contract} for the front series in the depth band."""
+def depth_options(day: date, expiry: date, channel: str = "depth") -> dict[float, dict[str, dict]]:
+    """strike -> {'CE': contract, 'PE': contract} for ``expiry`` on one capture channel."""
     out: dict[float, dict[str, dict]] = {}
     for p in sorted((SESSIONS / f"date={day}").glob("*-contracts.json")):
-        for c in json.loads(p.read_text())["channels"]["depth"]["contracts"]:
+        for c in json.loads(p.read_text())["channels"][channel]["contracts"]:
             if c["instrument"] == "OPTIDX" and c["expiry"] == str(expiry):
                 out.setdefault(c["strike"], {})[c["option_type"]] = c
     return {k: v for k, v in out.items() if len(v) == 2}
@@ -123,17 +124,112 @@ def leg_greeks(own, fv, is_call: bool, strike: float, fwd_t, fwd, expiry, every:
     return locf(ts, dl, t), locf(ts, vg, t)
 
 
+def series_expiry(day: date, series: str) -> date:
+    """The front expiry from the protocol, or the next one listed on the feed."""
+    front = PROTOCOL.expiry_for(day)
+    if series == "front":
+        return front
+    exps = set()
+    for p in sorted((SESSIONS / f"date={day}").glob("*-contracts.json")):
+        for c in json.loads(p.read_text())["channels"]["feed"]["contracts"]:
+            if c["instrument"] == "OPTIDX":
+                exps.add(date.fromisoformat(c["expiry"]))
+    later = sorted(e for e in exps if e > front)
+    if not later:
+        raise SystemExit(f"{day}: no expiry after {front} on the feed")
+    return later[0]
+
+
+def quote_book(root: str, day: date, sid: int, levels: int = 5) -> BookSeries:
+    """The quote feed's 5-level book, resampled onto a 200 ms decision clock.
+
+    The quote feed is event-driven: a quiet option sends nothing for seconds. The
+    strategy was built on the depth feed, where every leg is re-evaluated every
+    ~200 ms, so its fair value follows the forward within a fifth of a second.
+    Evaluating a leg only when its own packet arrives instead leaves its quotes on
+    a stale fair value while the forward moves -- measured on 2026-08-27, that
+    alone turned +Rs 80,643 into -Rs 59,172. So each book is carried forward
+    (last received row at or before each tick: causal) onto the same 200 ms
+    clock. Trades are unaffected; they bucket on their own receive times.
+    """
+    t, bp, bq, ap, aq = load_quote_ladders(root, day, sid, width=5)
+    w = min(levels, 5)
+    lo, hi = session_bounds_ns(day)
+    grid = np.arange(lo, hi + 1, DECISION_CLOCK_NS, dtype=np.int64)
+    j = np.searchsorted(t, grid, side="right") - 1
+    keep = j >= 0
+    grid, j = grid[keep], j[keep]
+    return BookSeries(security_id=sid, trading_date=day, recv_wall_ns=grid, bid_px=bp[j, :w],
+                      bid_qty=bq[j, :w], ask_px=ap[j, :w], ask_qty=aq[j, :w],
+                      flags=np.zeros(len(grid), dtype=bool))
+
+
+#: The depth feed's measured cadence, used as the decision clock for quote-feed books.
+DECISION_CLOCK_NS = 200_000_000
+
+
+def socket_outages(day: date, sids: list[int], max_gap_ns: int) -> tuple[np.ndarray, np.ndarray]:
+    """Gaps longer than ``max_gap_ns`` in the union of the quote feed's packet times.
+
+    The quote feed is one socket. When the busy front-month legs and the futures
+    all fall silent together, the socket was down -- that, not one quiet option,
+    is an outage. Returns sorted (start, end) arrays.
+    """
+    ts = [np.asarray(store.read_capture(str(ROOT), "quotes", dates=[day], security_ids=[s])
+                     .column("recv_wall_ns"), dtype=np.int64) for s in sids]
+    u = np.unique(np.concatenate([x for x in ts if len(x)] or [np.zeros(0, np.int64)]))
+    if len(u) < 2:
+        return np.zeros(0, np.int64), np.zeros(0, np.int64)
+    g = np.flatnonzero(np.diff(u) > max_gap_ns)
+    return u[g], u[g + 1]
+
+
+def stale_from_outages(t: np.ndarray, starts: np.ndarray, ends: np.ndarray) -> np.ndarray:
+    """True for interval (t[k-1], t[k]] if any socket outage overlaps it."""
+    out = np.zeros(len(t), dtype=bool)
+    if len(t) < 2 or not len(starts):
+        return out
+    prev, now = t[:-1], t[1:]
+    j = np.searchsorted(ends, prev, side="right")  # first outage ending after prev
+    ok = j < len(starts)
+    out[1:][ok] = starts[j[ok]] < now[ok]
+    return out
+
+
 def build_day(day: date, args) -> dict:
-    expiry = PROTOCOL.expiry_for(day)
-    opts = depth_options(day, expiry)
+    expiry = series_expiry(day, args.series)
+    quotes = args.source == "quotes"
+    opts = depth_options(day, expiry, "feed" if quotes else "depth")
     ks = sorted(opts)
     t0 = time.time()
-    loader = load_merged_book if args.book == "merged" else load_book
+    if quotes:
+        loader = lambda root, d, sid, levels=5: quote_book(root, d, sid, levels)  # noqa: E731
+    else:
+        loader = load_merged_book if args.book == "merged" else load_book
     l1 = {}
     for k in ks:
         for r in ("CE", "PE"):
             l1[opts[k][r]["security_id"]] = loader(str(ROOT), day, opts[k][r]["security_id"], levels=1)
-    grid, idx = align(l1)
+    if quotes:
+        # The feed carries up to +/-50 strikes on unsynchronised event clocks; the
+        # union of their timestamps is millions of points. Match the depth band the
+        # strategy was built on (ATM +/-11 = 23 strikes) and solve parity on a
+        # regular 200 ms grid -- the depth feed's own cadence -- carrying each book's
+        # last received row forward, which is causal.
+        def med(sid):
+            b = l1[sid]
+            return float(np.nanmedian(b.mid)) if len(b) else np.nan
+        gap = {k: abs(med(opts[k]["CE"]["security_id"]) - med(opts[k]["PE"]["security_id"]))
+               for k in ks}
+        k0 = min((k for k in ks if np.isfinite(gap[k])), key=lambda k: gap[k])
+        ks = [k for k in ks if abs(k - k0) <= 1100 + 1e-9]
+        lo_ns, hi_ns = session_bounds_ns(day)
+        grid = np.arange(lo_ns, hi_ns + 1, 200_000_000, dtype=np.int64)
+        idx = {opts[k][r]["security_id"]: np.searchsorted(
+                   l1[opts[k][r]["security_id"]].recv_wall_ns, grid, side="right") - 1
+               for k in ks for r in ("CE", "PE")}
+    else:
+        grid, idx = align(l1)
     fwd = implied_forward(grid, {k: (l1[opts[k]["CE"]["security_id"]], l1[opts[k]["PE"]["security_id"]])
                                  for k in ks}, idx, expiry)
     ok = np.isfinite(fwd.forward)
@@ -141,6 +237,18 @@ def build_day(day: date, args) -> dict:
     atm = float(np.median(fwd_v))
 
     chosen = [k for k in ks if abs(k - atm) <= args.band * 100 + 1e-9]
+    outages = None
+    if quotes:
+        # Socket liveness from the busiest instruments on the feed: the front
+        # series within +/-11 strikes of this forward, and both futures.
+        front = PROTOCOL.expiry_for(day)
+        fo = depth_options(day, front, "feed")
+        live_ids = [fo[k][r]["security_id"] for k in fo if abs(k - atm) <= 1100 for r in ("CE", "PE")]
+        for p_ in sorted((SESSIONS / f"date={day}").glob("*-contracts.json")):
+            for c in json.loads(p_.read_text())["channels"]["feed"]["contracts"]:
+                if c["instrument"] == "FUTIDX":
+                    live_ids.append(c["security_id"])
+        outages = socket_outages(day, sorted(set(live_ids)), 1_000_000_000)
     legs: list[Leg] = []
     for k in chosen:
         for r in ("CE", "PE"):
@@ -156,7 +264,9 @@ def build_day(day: date, args) -> dict:
             legs.append(Leg(security_id=c["security_id"], name=c["display_name"], strike=k,
                             is_call=r == "CE", tick=c["tick_size"], lot_size=c["lot_size"],
                             freeze_qty=c["freeze_qty"], book=book, tape=tape,
-                            fair_value=fv, delta=dl, vega=vg))
+                            fair_value=fv, delta=dl, vega=vg,
+                            stale=None if outages is None else
+                            stale_from_outages(book.recv_wall_ns, *outages)))
     return {"day": day, "expiry": expiry, "legs": legs, "fwd_t": fwd_t, "fwd": fwd_v,
             "atm": atm, "load_s": time.time() - t0}
 
@@ -197,7 +307,7 @@ def params_from(args) -> PortfolioParams:
         leg_skew_ticks=args.leg_skew, vega_skew=args.vega_skew,
         vega_limit_lots=args.vega_limit, min_premium=args.min_premium,
         queue_at_price_ahead=not args.optimistic_queue, imbalance_pull=args.imbalance,
-        min_spread_bp=args.min_spread_bp, close_only_last_s=args.close_only,
+        min_spread_bp=args.min_spread_bp, activation_ns=int(args.latency_ms * 1_000_000), close_only_last_s=args.close_only,
     )
 
 
@@ -253,6 +363,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--leg", choices=("both", "ce", "pe"), default="both")
     p.add_argument("--levels", type=int, default=10)
     p.add_argument("--fv", choices=("own", "parity", "blend"), default="blend")
+    p.add_argument("--source", choices=("depth", "quotes"), default="depth",
+                   help="quotes = books from the quote feed's 5-level block, with socket-level "
+                        "staleness; the only source for series outside the depth band")
+    p.add_argument("--series", choices=("front", "next"), default="front")
     p.add_argument("--book", choices=("depth", "merged"), default="depth",
                    help="merged = freshest of depth and quote feed, causally (book/merge.py)")
     p.add_argument("--lots", type=int, default=1)
@@ -273,6 +387,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--min-dte", type=int, default=None,
                    help="skip days closer to expiry than this; default from config/instruments.yaml")
     p.add_argument("--optimistic-queue", action="store_true")
+    p.add_argument("--latency-ms", type=float, default=0.0,
+                   help="order activation latency: ignore prints received sooner than this "
+                        "after an order was placed (0 = off)")
     p.add_argument("--imbalance", type=float, default=1.0,
                    help="pull the threatened side when |5-level imbalance| > this (1 = off)")
     p.add_argument("--close-only", type=float, default=0.0, help="seconds before close: reduce only")
@@ -292,7 +409,7 @@ def main(argv: list[str] | None = None) -> int:
         import yaml
         args.min_dte = int(yaml.safe_load((_REPO_ROOT / "config" / "instruments.yaml").read_text())
                            ["options"]["min_days_to_expiry"])
-    skipped = [d for d in days if (PROTOCOL.expiry_for(d) - d).days < args.min_dte]
+    skipped = [d for d in days if (series_expiry(d, args.series) - d).days < args.min_dte]
     if skipped:
         print(f"skipping {[str(d) for d in skipped]}: fewer than {args.min_dte} days to expiry "
               f"(config/instruments.yaml options.min_days_to_expiry)")

@@ -1,4 +1,4 @@
-# Phase 2 — a portfolio options market maker, profitable out of sample
+# Phase 2 — a portfolio options market maker: profitable at zero latency, not at realistic latency
 
 **Date:** 2026-09-30. **Strategy:** `mm_v1`, frozen in `config/frozen/mm_v1.yaml`
 (sha256 `4f144314…`) before any holdout run. **Code:** `src/bnfmm/sim/portfolio.py`,
@@ -6,7 +6,47 @@
 differenced from the real quote feed. **No order was placed; no trading endpoint exists in this
 repository** (`tests/test_no_order_placement.py`).
 
-## The answer
+## ⚠ Read this first — the result does not survive realistic latency
+
+Everything below the next heading was produced with **zero order latency**: a quote is live the
+instant the book that motivated it is received, and can be filled by any trade received after
+that. Re-running the *same frozen strategy* with a symmetric order-latency model (a new order
+becomes fillable, and a cancelled one stops being fillable, only after the latency has elapsed)
+changes the answer (added 2026-09-30, `DECISIONS.md` #23):
+
+| Frozen mm_v1, holdout (5 days) | Net, member | Liquidated at close | Days positive | R² range |
+|---|---|---|---|---|
+| 0 ms (headline below) | +199,537 | +155,159 | 5/5 | 0.002–0.18 |
+| **500 ms** | **−40,500** | **−84,754** | 1/5 | 0.001–0.16 |
+| 1000 ms | −96,808 | −136,953 | 1/5 | 0.001–0.07 |
+
+Develop days (Aug 27+28) show the same slope: +127,594 → +13,323 → −33,823.
+
+**What latency is realistic.** Trades reach us 0.8–1.0 s (median) after their exchange
+timestamp, which is truncated to the second, so the true print delay is ≈0.3–0.5 s. An order
+therefore competes only for prints received at least (print delay + order latency) after it was
+placed — ≈0.4–0.8 s for a non-co-located participant on these feeds. That is the range where
+the strategy goes from breakeven to losing.
+
+**So the defensible conclusion is:** the four structural changes below turn a strategy that was
+being picked off into one that genuinely captures spread and is market-neutral — but on this
+data, the captured edge is smaller than the cost of not being fast. In BRIEFING §11.6's terms,
+*the latency slope answers "strategy or co-location bet"*, and it answers "co-location bet".
+The zero-latency figures remain the right way to measure *what the quoting logic captures*;
+they are not a statement of what a real participant would have made.
+
+Two further robustness checks, same frozen strategy, develop days:
+
+* **Book source.** With the depth feed merged causally with the 225 ms-fresher quote feed
+  (strictly more information), net falls from +127,594 to +69,666. Built from the quote feed
+  alone (on the same 200 ms decision clock) it is −39,520. Roughly half the zero-latency edge
+  depends on the depth feed's representation of the book.
+* **Longer-dated options (Oct series, and Sep series on Aug 24/25).** These exist only on the
+  quote feed. Because the quote-feed adapter could not reproduce the depth-feed development
+  result (above), the frozen strategy was **not** run on them: a number from an unvalidated
+  adapter would not mean anything.
+
+## The zero-latency result
 
 On five unseen BANKNIFTY sessions (2026-08-31 → 2026-09-04, 25–29 DTE), the frozen strategy made
 money on **every day**, at exchange-member cost:
@@ -41,7 +81,7 @@ does not depend on any mark.
   on a working strategy: the statutory floor is survivable, the flat retail fee at one lot is not.
 
 **How many configurations were tried: 26**, all on develop days, logged in
-`reports/config_log.jsonl`. The holdout was read once (`reports/holdout_log.md`).
+`reports/config_log.jsonl`. The holdout was read once for this evaluation and once more for the latency sensitivity above (`reports/holdout_log.md`).
 
 ## What changed from Phase 1, and why each change is principled
 
@@ -107,9 +147,9 @@ optimistic" holds for fill counts, not for PnL, and is not claimed.
   position is approximated, hidden orders are invisible, and the tape is inferred from cumulative
   volume with the aggressor side classified by Lee-Ready. Every quote improving the touch is
   assumed first in its level; the pessimistic convention governs quotes that join a level.
-* **No latency model.** Quotes are placed at the receive time of the snapshot that motivated
-  them. A real system adds network and exchange latency; the depth feed itself already lags the
-  quote feed by ~225 ms (`reports/data_integrity.md`).
+* **Latency is decisive** — see the section at the top. The headline tables are zero-latency;
+  at 500 ms the holdout loses. The depth feed itself already lags the quote feed by ~225 ms
+  (`reports/data_integrity.md`).
 * **Exchange-member costs** are the favourable bound. Retail at one lot loses.
 * **One expiry cycle, 25–33 DTE.** Five holdout sessions of one monthly series cannot show how
   the edge varies across volatility regimes or expiry cycles. Near-expiry sessions are excluded
@@ -119,8 +159,9 @@ optimistic" holds for fill counts, not for PnL, and is not claimed.
   and larger size was not run out of sample.
 * **The 7.05 bp adverse-selection input** was measured on the develop days it was then applied
   to. The holdout is the test of whether it transferred; it did.
-* **The holdout is now spent.** Any change to `mm_v1` is `mm_v2`, and it has no clean holdout
-  left in this corpus.
+* **The holdout is now spent.** It was read twice: once for the frozen evaluation, once for the
+  latency sensitivity of the *same* frozen strategy (`reports/holdout_log.md`). Any change to
+  `mm_v1` is `mm_v2`, and it has no clean holdout left in this corpus.
 
 ## Reproducing
 

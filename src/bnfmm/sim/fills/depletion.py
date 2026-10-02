@@ -151,6 +151,7 @@ class Fill:
     swept: bool  # filled by a level sweep rather than queue depletion
     queue_ahead: int  # displayed size ahead of us when the order rested
     cum_volume: int  # eligible volume accumulated when this fill triggered
+    order_id: int = -1  # the order this fill belongs to (brokerage is per order)
 
 
 def queue_ahead(
@@ -219,6 +220,10 @@ class RestingOrder:
     queue_ahead: int
     filled: int = 0
     cum_volume: int = 0
+    order_id: int = -1
+    #: When a cancel sent at some earlier time reaches the exchange. Until then
+    #: the order is still live and can still be filled (see ``cancel_at``).
+    cancel_ns: int | None = None
 
     @property
     def remaining(self) -> int:
@@ -245,13 +250,23 @@ class DepletionSimulator:
         max_stale_ns: int = DEFAULT_MAX_STALE_NS,
         queue_at_price_ahead: bool = True,
         allow_sweep_fill: bool = True,
+        activation_ns: int = 0,
     ) -> None:
         self.max_stale_ns = max_stale_ns
+        # An order can only trade against prints that happened after it reached
+        # the exchange. Prints carry only our *receive* time, and the quote feed
+        # delivers them 0.4-0.9 s after they execute, so a print received shortly
+        # after we placed an order usually executed before the order existed.
+        # With activation_ns > 0, a print counts toward an order only if it was
+        # received at least that long after the order was placed. 0 = off (the
+        # behaviour every result before this parameter was produced with).
+        self.activation_ns = activation_ns
         # False = optimistic: assume we were first at our own price level.
         self.queue_at_price_ahead = queue_at_price_ahead
         self.allow_sweep_fill = allow_sweep_fill
         self.stats = FillStats()
         self._orders: list[RestingOrder] = []
+        self._next_id = 0
 
     # -- order management ----------------------------------------------------
 
@@ -282,7 +297,9 @@ class DepletionSimulator:
             quantity=quantity,
             placed_ns=now_ns,
             queue_ahead=ahead,
+            order_id=self._next_id,
         )
+        self._next_id += 1
         self._orders.append(order)
         return order
 
@@ -304,6 +321,17 @@ class DepletionSimulator:
         except ValueError:
             pass
 
+    def cancel_at(self, order: RestingOrder, effective_ns: int) -> None:
+        """Send a cancel that reaches the exchange at ``effective_ns``.
+
+        With order latency the cancel of a repriced quote is not instant: the old
+        order stays at the exchange, and can be filled, until the cancel arrives.
+        Removing it immediately while the replacement waits out its own latency
+        would leave the strategy with *no* order in that window -- a one-sided
+        latency model, biased against every strategy that reprices.
+        """
+        order.cancel_ns = effective_ns
+
     @property
     def resting(self) -> list[RestingOrder]:
         return [o for o in self._orders if o.live]
@@ -320,6 +348,7 @@ class DepletionSimulator:
         tape_aggressor: np.ndarray,
         best_bid: float,
         best_ask: float,
+        tape_t: np.ndarray | None = None,
     ) -> list[Fill]:
         """Advance one snapshot interval and return the fills it produced.
 
@@ -346,6 +375,11 @@ class DepletionSimulator:
             vol = eligible_volume(
                 order.price, order.side, tape_price, tape_qty, tape_aggressor
             )
+            if self.activation_ns and tape_t is not None:
+                live_at = tape_t >= order.placed_ns + self.activation_ns
+                if order.cancel_ns is not None:
+                    live_at &= tape_t < order.cancel_ns
+                vol = np.where(live_at, vol, 0)
             total = int(vol.sum())
             if total:
                 order.cum_volume += total
@@ -380,8 +414,13 @@ class DepletionSimulator:
                     swept=swept,
                     queue_ahead=order.queue_ahead,
                     cum_volume=order.cum_volume,
+                    order_id=order.order_id,
                 )
             )
+
+        # Orders whose cancel has reached the exchange, and filled orders, are done.
+        self._orders = [o for o in self._orders
+                        if o.live and (o.cancel_ns is None or o.cancel_ns > now_ns)]
 
         return fills
 

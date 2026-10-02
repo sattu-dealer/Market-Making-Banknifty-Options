@@ -14,8 +14,8 @@
 > remaining phase.
 >
 > **Last updated: 2026-09-30 — capture is closed (10 sessions), the data passed an integrity
-> check, and a rebuilt portfolio market maker is profitable out of sample on all five holdout
-> sessions. See §0 and §20. §17 (the negative Phase 1 result) is kept as history.**
+> check, and a rebuilt portfolio market maker is market-neutral and profitable out of sample
+> *at zero latency* — but loses at a realistic 500 ms. See §0 and §20. §17 is kept as history.**
 >
 > Dates in this document are absolute. Where an older section says "today" it has been
 > rewritten; if you find a surviving "today", treat it as a bug in this document.
@@ -27,7 +27,7 @@
 | | |
 |---|---|
 | **Phase** | Capture **closed** (entitlement lapsed 2026-09-22; user: no more collection). Phase 2 market maker built, frozen, and evaluated out of sample |
-| **Headline result** | **`mm_v1` makes money on 5/5 unseen sessions: +₹199,537 member net, +₹155,159 liquidated at the close, R² on the market 0.002–0.18.** Retail (Dhan ₹20/order, 1 lot) loses ₹121,494. §20, `reports/phase2_portfolio_market_maker.md` |
+| **Headline result** | **`mm_v1` is genuine market making (R² on the market ≤0.18) and makes +₹199,537 on 5/5 unseen sessions at zero latency — but −₹40,500 at 500 ms order latency and −₹96,808 at 1000 ms.** The edge is smaller than the cost of not being fast. §20.6, `DECISIONS.md` #23 |
 | **Data** | **10 sessions**, 2026-08-24 → 2026-09-04, 64 GB. Integrity verdict: fit for simulation, one tape bug fixed. `reports/data_integrity.md` |
 | **Tests** | **580 collected: 579 passing, 1 failing** — the known stale-master test, §13.9 (now safe to fix, see below) |
 | **Configurations tried** | 26 on develop days (`reports/config_log.jsonl`); holdout read once (`reports/holdout_log.md`) |
@@ -3252,4 +3252,23 @@ and a spent holdout. The report's §"Limitations" is canonical.
 ```bash
 .venv/bin/python scripts/mm.py --band 11 --buffer 3 --cost-split symmetric --vega-limit 3 --min-spread-bp 37.8
 ```
+
+### 20.6 ⚠ Latency and book-source robustness — the result that qualifies §20.1
+
+Added later on 2026-09-30; full account in `DECISIONS.md` #23 and at the top of the Phase 2 report.
+Same frozen strategy, only simulator realism varied:
+
+| | 0 ms | 500 ms | 1000 ms |
+|---|---|---|---|
+| Develop (Aug 27+28), member net | +127,594 | +13,323 | −33,823 |
+| **Holdout (5 days), member net** | +199,537 | **−40,500** | −96,808 |
+
+Trades arrive ≈0.3–0.5 s after they execute, so ≈0.4–0.8 s is the realistic activation delay
+for a non-co-located participant. Book source matters too: depth merged with the fresher quote
+feed gives +69,666 on develop; quote feed alone −39,520. The longer-dated series (quote feed
+only) were therefore not run — the adapter failed validation.
+
+**The honest one-line result for the write-up:** *the quoting logic captures spread and stays
+market-neutral, but on this data the edge is smaller than the cost of latency; profitable market
+making here is a co-location question, not a strategy question.*
 

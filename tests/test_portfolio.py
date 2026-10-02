@@ -129,3 +129,18 @@ def test_fills_are_settled_before_requoting():
     tape = _tape([b.recv_wall_ns[3] - 1], [100.0], [30], [SELL])
     res = run_portfolio([_leg(b, tape)], P)
     assert res.fills[0].t == b.recv_wall_ns[3]
+
+
+def test_event_driven_feed_uses_socket_staleness_not_leg_silence():
+    # A quiet leg (10 s between packets) on a live socket must still fill; the
+    # same interval flagged stale by the socket must not.
+    b = _book(6, gap_at=3)
+    tape = _tape([b.recv_wall_ns[3] - 1], [100.0], [30], [SELL])
+    live = _leg(b, tape)
+    live.stale = np.zeros(len(b), dtype=bool)
+    assert len(run_portfolio([live], P).fills) == 1
+    dead = _leg(b, tape)
+    dead.stale = np.zeros(len(b), dtype=bool)
+    dead.stale[3] = True
+    res = run_portfolio([dead], P)
+    assert res.fills == [] and res.stand_down.get("stale_book", 0) >= 1
