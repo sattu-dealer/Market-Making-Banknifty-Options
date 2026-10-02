@@ -1,0 +1,62 @@
+# FROZEN EVALUATION PROTOCOL -- rv-market-maker branch (strategy family #1:
+# relative-value quoting off a fitted volatility smile).
+#
+# Written 2026-10-02, BEFORE any smile fit, residual, or persistence statistic
+# had been computed on any day. The classic study's protocol
+# (config/frozen/protocol.yaml) is unchanged and still governs main.
+#
+# HONEST STATUS OF THE DATA. Every usable session has already been read by the
+# classic market maker: Aug 27/28 to develop it, Aug 31 - Sep 4 to evaluate it.
+# No session is pristine. What this protocol can still guarantee is narrower:
+# the validation days below have never been touched by ANY smile / RV analysis,
+# parameter choice or diagnostic in this branch. Results on them are
+# "unseen by this strategy family", not "unseen by the researcher", and must be
+# reported as weaker evidence than the classic mm_v1 holdout.
+
+frozen_at: 2026-10-02
+
+# Exploration: the go/no-go measurement, model choices and any parameters.
+develop:
+  - 2026-08-27
+  - 2026-08-28
+# Validation: read once per frozen strategy, logged like the classic holdout.
+holdout:
+  - 2026-08-31
+  - 2026-09-01
+  - 2026-09-02
+  - 2026-09-03
+  - 2026-09-04
+excluded:
+  2026-08-24: "1 DTE; below options.min_days_to_expiry (config/instruments.yaml)"
+  2026-08-25: "0 DTE; below options.min_days_to_expiry"
+  2026-08-26: "feed dead from 10:44; fails the coverage rule"
+
+expiry:
+  2026-08-24: 2026-08-25
+  2026-08-25: 2026-08-25
+  default: 2026-09-29
+
+session_window_ist: ["09:15:00", "15:30:00"]
+inclusion:
+  max_gap_s: 30
+  min_depth_coverage: 0.25
+  min_feed_coverage: 0.25
+
+# --- Pre-registered go / no-go for strategy #1 -------------------------------
+# Measured on the develop days only, before any strategy is built. The question
+# is whether smile mispricings outlive the latency that killed the classic
+# market maker (DECISIONS #23: prints arrive ~0.3-0.5 s late; 0.4-0.8 s total).
+#
+# GO requires BOTH:
+#   1. Persistence: the residual (market mid minus leave-one-out smile value)
+#      has autocorrelation >= 0.5 at a 5 s lag, pooled over quoted options.
+#   2. Exploitability after delay: among observations whose |residual| exceeds
+#      half the book spread, the price correction toward the smile measured
+#      from t + 1 s (not t) to t + 1 s + tau exceeds the average per-side member
+#      cost (11.85 bp of premium) for at least one tau in {5, 30, 300} s.
+# Otherwise NO-GO: strategy #1 is not built, and that is reported as a result.
+go_no_go:
+  min_autocorr_5s: 0.5
+  entry_delay_s: 1.0
+  horizons_s: [5, 30, 300]
+  per_side_cost_bp: 11.85
