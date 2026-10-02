@@ -823,3 +823,56 @@ the structural changes of #21 make the quoter capture spread and stay market-neu
 data the edge is smaller than the cost of not being fast — a co-location bet, not a strategy a
 retail-latency participant could run. The zero-latency figures measure what the quoting logic
 captures; they are not what a real participant would have made.
+
+## 24. The rv-market-maker fork: both latency-tolerant strategies fail their pre-registered bars
+
+*2026-10-02, branch `rv-market-maker`.* After #23 showed the classic edge is latency-bound, `main`
+was tagged `classic-mm-v1` and this branch was forked to look for an edge that is not speed.
+Each candidate got a go/no-go committed and pushed *before* its statistic was computed
+(`config/frozen/protocol_rv.yaml`, `protocol_rv_patient.yaml`), measured on Aug 27/28 only:
+
+1. **Smile relative value** — leave-one-out smile residuals persist (autocorrelation 0.587 at
+   5 s, 0.30 at 5 min) and survive a 1 s entry delay almost intact, but the correction toward the
+   smile is at best +4.46 bp against 11.85 bp per side. **NO-GO.**
+   `reports/rv_strategy1_smile_go_no_go.md`
+2. **Patient liquidity provision** — orders δ bp from a 1 s-old fair value. Close in (50 bp) they
+   are picked off (−3.75 bp at 30 s); further out, dislocations revert +17–22 bp over 5 minutes,
+   below the 23.71 bp round trip and within noise. **NO-GO.**
+   `reports/rv_strategy2_patient_go_no_go.md`
+
+Neither was built, so the validation days (Aug 31 – Sep 4) remain untouched by this family.
+
+**The combined conclusion, which is the branch's result:** on this market the two constraints
+bind from opposite sides. Edges large enough to pay Indian statutory costs on option premium
+(~24 bp round trip) decay faster than ~0.5 s; edges that survive the latency are smaller than
+the cost. Market making BANKNIFTY options passively from a non-co-located seat is squeezed out
+by speed on one side and STT on the other.
+
+## 25. Three more bugs found while building and stress-testing Phase 2
+
+*2026-09-30.* Recorded alongside #17 and #19 because each would have produced a wrong number.
+
+1. **Order ids from Python `id()`.** The first portfolio runs grouped fills into orders by
+   `id(order)`. Python reuses ids after an object is garbage-collected, so later orders shared ids
+   with dead ones: sell fills were merged into "buy" orders and their STT was dropped. Member cost
+   was understated by ~16% (₹277,018 vs ₹329,055 on the first band-3 run) and Dhan brokerage was
+   charged on 32 "orders" instead of 13,007. Found because "32 orders for 13,007 fills" was
+   impossible. Fixed before any reported number: the fill model now assigns order ids and every
+   fill carries its own.
+2. **Event-driven books evaluated per packet.** On the quote feed a quiet option sends nothing
+   for seconds. Re-quoting a leg only when its own packet arrived left its quotes on a stale fair
+   value while the forward moved (Aug 27: −₹59,172 vs +₹80,643 on depth). Fixed by resampling onto
+   a 200 ms decision clock; the adapter still failed validation (§22.3 of BRIEFING) and was not
+   used for any reported result.
+3. **One-sided latency.** The first latency model delayed new orders but cancelled old ones
+   instantly, leaving a repricing quoter with no order in every gap. Replaced by symmetric latency
+   (`DepletionSimulator.cancel_at`) before the reported latency results.
+
+## 26. Branch policy: the classic study stays on `main`, new strategy families fork
+
+*2026-10-02.* At the user's request ("this must be a fork so that the classic market maker has its
+own place and importance in quant interviews"): `main` holds the complete classic study, pinned by
+tag `classic-mm-v1`; `rv-market-maker` holds the latency-tolerant strategy work and never merges
+back. `BRIEFING.md` and `DECISIONS.md` are kept identical on both branches so either is a complete
+handover; each branch has its own `README.md`. Every new strategy family gets its own frozen
+protocol file, committed and pushed before its first statistic.
